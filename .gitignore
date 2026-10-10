@@ -1,2 +1,49 @@
-/target
-/.deps
+# --- Rust ---------------------------------------------------------------
+# Saída do cargo (debug, release, cross para Linux).
+/target/
+**/*.rs.bk
+# Símbolos de depuração gerados fora de target/.
+*.pdb
+
+# --- Dependências locais (não versionadas) ------------------------------
+# FFmpeg LGPL e libclang baixados para o spike de vídeo (~300 MB).
+# Ver spikes/video/README.md para como obter.
+/.deps/
+# DLLs do FFmpeg copiadas para perto do .exe ao testar.
+avcodec-*.dll
+avutil-*.dll
+swresample-*.dll
+avformat-*.dll
+avfilter-*.dll
+avdevice-*.dll
+swscale-*.dll
+
+# --- Dados do app ------------------------------------------------------
+# Identidade, salas e histórico ficam em %APPDATA%\LerriChat (fora do repo),
+# mas quem roda com --data-dir dentro do projeto não deve commitar isso.
+/data/
+/dados/
+crash.log
+*.log
+
+# --- Pacotes de distribuição -------------------------------------------
+/dist/
+*.zip
+*.7z
+
+# --- Editores e sistema ------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Segredos ----------------------------------------------------------
+.env
+.env.*
+*.pfx
+*.p12
+*.key
+*.pem

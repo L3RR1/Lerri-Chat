@@ -710,6 +710,9 @@ component RoomView inherits VerticalLayout {
                 property <bool> any: root.watching-label != "" || root.watching-cam-label != "";
                 vertical-stretch: any ? 3 : 0;
                 max-height: any ? 100000px : 0px;
+                // Sem isto, as duas colunas vazias (max-width 0) limitam a largura
+                // da coluna inteira e sobra uma faixa à direita da sala.
+                max-width: 100000px;
                 min-height: any ? 240px : 0px;
                 background: Theme.surface;
                 border-radius: 8px;

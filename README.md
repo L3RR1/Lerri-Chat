@@ -1,50 +1,108 @@
-# Lerri Chat
+<p align="center">
+  <img src="docs/logo.png" width="160" alt="Mascote do Lerri Chat">
+</p>
 
-> App de voz/chat/compartilhamento de tela **self-hosted**, **anônimo** e **focado em desempenho** para Windows. Um único `.exe`, sem instalação, sem conta, sem nuvem de terceiros.
+<h1 align="center">Lerri Chat</h1>
 
-## O que é
+<p align="center">
+  <b>Voz, chat, tela e câmera entre amigos. Cifrado de ponta a ponta, sem conta, sem nuvem de ninguém.</b><br>
+  Um único <code>.exe</code> de 23 MB que abre em menos de 0,1 s e fica em 22 MB de RAM parado.
+</p>
 
-Um "Discord" mínimo e brutalmente leve:
+<p align="center">
+  <a href="https://github.com/L3RR1/Lerri-Chat/actions/workflows/ci.yml"><img src="https://github.com/L3RR1/Lerri-Chat/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/Rust-2024-B36BFF?logo=rust&logoColor=white" alt="Rust 2024">
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-B36BFF?logo=windows&logoColor=white" alt="Windows">
+  <img src="https://img.shields.io/badge/E2EE-MLS%20%2B%20SFrame-3DDC97" alt="E2EE">
+</p>
 
-- **Um `.exe`** que roda como **cliente** ou como **host** (você escolhe no primeiro uso).
-- **Salas por código de convite único.** Sem diretório público, sem busca, sem listagem.
-- **Servidor cego:** o servidor (relay) repassa pacotes criptografados ponta a ponta (E2EE). Ele nunca vê mensagens, voz, tela ou câmera — e não consegue se colocar dentro da sala.
-- **Anônimo:** sua identidade é um par de chaves gerado no seu PC. Sem e-mail, telefone ou nome.
-- **Só o essencial:** chat de texto em grupo, voz, compartilhamento de tela e câmera. Nada de loja, nitro, telemetria, atividade ou animação supérflua.
-- **Desempenho acima de tudo:** UI nativa (sem navegador embutido), captura e codificação de vídeo na GPU, decodificação só do que você está olhando.
+<p align="center">
+  <img src="docs/sala.png" width="820" alt="Sala do Lerri Chat">
+</p>
 
-## Dois modos de host (você decide)
+---
 
-| Modo | Quem hospeda | Quando usar |
-|------|--------------|-------------|
-| **x1 (P2P direto)** | Um dos participantes vira host; o outro conecta direto nele | 2 pessoas, latência mínima, zero infra se o PC de quem cria for alcançável (IPv6 ou porta mapeada) |
-| **Servidor (SFU)** | Uma máquina dedicada (VPS ou Proxmox de casa) repassa pra todos | 3+ pessoas, quem fala não some quando o host fecha o PC |
+## Por quê
 
-A mesma sala pode nascer em qualquer um dos modos — a escolha é do usuário na criação.
+O Discord é pesado, exige conta, guarda tudo e lê o que quiser. O Lerri Chat é o oposto:
 
-## Como ler este repositório
+- 🔒 **O servidor é cego.** Mensagens, voz, tela e câmera saem cifradas do seu PC e só abrem no PC de quem está na sala. Quem hospeda repassa bytes que não consegue ler, e não consegue se infiltrar no grupo.
+- 👤 **Anônimo de verdade.** Sua identidade é um par de chaves criado no seu PC. Sem e-mail, sem telefone, sem nome.
+- 🎟️ **Só entra quem é convidado.** Convites de uso único, válidos por 24 h, com link e QR. Sem lista pública, sem busca.
+- 🏠 **Você hospeda.** Direto entre dois PCs, ou num servidor seu (VPS, Proxmox de casa). Nenhum STUN, relay ou serviço de terceiros.
+- ⚡ **Leve como deve ser.** Interface nativa (sem navegador embutido), captura e codificação de vídeo na GPU, decodificação só do que você está assistindo.
 
-Desenvolvimento guiado por especificação (SDD). Primeiro a spec, depois o código. Ordem de leitura:
+## O que tem
 
-1. [`SPEC-00-visao.md`](SPEC-00-visao.md) — requisitos e princípios
-2. [`SPEC-01-arquitetura.md`](SPEC-01-arquitetura.md) — stack e desenho técnico
-3. [`SPEC-02-seguranca.md`](SPEC-02-seguranca.md) — identidade, E2EE, convites, modelo de ameaça
-4. [`SPEC-03-rede.md`](SPEC-03-rede.md) — QUIC, NAT, CGNAT, x1 vs servidor
-5. [`SPEC-04-midia.md`](SPEC-04-midia.md) — voz, tela e câmera com máximo desempenho
-6. [`SPEC-05-design-system.md`](SPEC-05-design-system.md) — a identidade visual (roxo/escuro)
-7. [`SPEC-06-fases.md`](SPEC-06-fases.md) — roadmap por fases com critérios de aceite
+| | |
+|---|---|
+| 💬 **Chat em grupo** | Cifrado com MLS (o protocolo de grupo da IETF). Quem é removido não lê mais nada daí em diante. Histórico local opcional. |
+| 🎙️ **Voz** | Opus, cancelamento de eco (AEC3), supressão de ruído (com modo forte via RNNoise), ganho automático, só transmite quando você fala. Anel roxo em quem está falando. |
+| 🖥️ **Tela** | Captura e codificação na GPU (HEVC, H.264 ou AV1 conforme a placa), codec negociado pelo que todos conseguem decodificar, bitrate adaptativo. 1080p60 gastando 0,1% da CPU. |
+| 📷 **Câmera** | 720p pelo mesmo caminho da tela. Dá para compartilhar tela e câmera juntas, e assistir às duas. |
+| 🛡️ **Gestão** | O dono convida e remove; remover troca a chave do grupo na hora. Aviso de quem entrou, com o início da chave pública. |
 
-## Estado
+## Dois jeitos de hospedar
 
-- **Fase 0 — Fundação, concluída.** Workspace, identidade local cifrada e os spikes que fecharam as decisões D-01 a D-03 (ver [`SPEC-06`](SPEC-06-fases.md), [`spikes/video`](spikes/video/README.md) e [`spikes/p2p`](spikes/p2p/README.md)).
-- **Fase 1 — Salas, convites e conectividade: implementada, falta o teste com redes reais.** Salas nos dois modos, convites de uso único com QR, links `lerrichat://`, x1 direto e x1 assistido pelo ponto de encontro do seu relay. A interface ganhou a forma final na Fase 6.
-- **Fase 2 — Chat de texto E2EE: implementada.** Grupo MLS por sala, admissão com o segredo do convite, chat cifrado, remover membro e sair, apelido e histórico local opcionais.
-- **Fase 3 — Voz: implementada, falta o teste de ouvido entre dois PCs.** Canal de voz cifrado de ponta a ponta (SFrame com chaves do MLS), cancelamento de eco, supressão de ruído e ganho automático, só transmite quando você fala, indicador de quem está falando. O relay repassa a voz sem conseguir ouvir.
-- **Fase 4 — Compartilhar a tela: implementada (sem simulcast), falta o teste entre dois PCs.** Captura e codificação na GPU (HEVC/H.264/AV1 conforme a placa), codec negociado pelo que todos decodificam, decode na GPU e exibição sem passar pela CPU. Cada quadro vai cifrado num stream QUIC, e o relay repassa só para quem assiste, sem conseguir ver.
-- **Fase 5 — Câmera: implementada (sem simulcast), falta o teste entre dois PCs.** Câmera em 720p pelo mesmo caminho da tela (captura e codificação na GPU, cifrada de ponta a ponta), ao mesmo tempo que a tela. Dá para assistir a uma tela e uma câmera juntas.
-- **Fase 6 — Interface e polimento: em andamento.** Paleta do LerriNFC com contraste AA conferido por teste, barra de controle embaixo (voz · tela · câmera), indicador de rede com a latência colorida pela qualidade, confirmação explicada para remover e sair, aviso do firewall antes de criar sala e tela "Sobre" com as licenças. Faltam a assinatura de código e o teste com um convidado leigo num Windows limpo.
+| Modo | Como funciona | Quando usar |
+|------|---------------|-------------|
+| **x1 (direto)** | Quem cria a sala vira o host; o outro conecta direto nele (IPv6, porta mapeada pelo roteador ou hole punching pelo seu relay) | 2 pessoas, latência mínima, zero infraestrutura |
+| **Servidor** | O `lerrichat-host` roda numa máquina sua e repassa para todos, sem decifrar nada | 3 ou mais pessoas, sala que continua de pé quando alguém sai |
 
-## Compilar e testar
+## Números
+
+Medidos num Ryzen 5 5600 + RX 6700 XT, build release, processo real:
+
+| | |
+|---|---|
+| Tamanho do `.exe` | **23,1 MiB** (meta: < 25) |
+| Janela aberta | **42–91 ms** (meta: < 1,5 s) |
+| RAM parado | **22 MB** na tela inicial, **37 MB** hospedando uma sala (meta: < 80) |
+| Voz, os dois lados falando | **0,26%** da CPU, 24 MB |
+| Transmitindo a tela a 58 fps | **0,09%** da CPU |
+| Tela + câmera ao mesmo tempo | **0,17%** da CPU |
+
+## Usar
+
+**Primeira vez:** o `.exe` não é assinado, então o Windows mostra "O Windows protegeu o computador". Clique em **Mais informações** → **Executar assim mesmo**. Se for criar sala x1, permita o acesso à rede quando o Windows perguntar.
+
+Abra o `lerrichat.exe`:
+
+- **Entrar numa sala:** cole o convite (`lerrichat://join?…`). Depois da primeira execução, clicar num convite já abre o app.
+- **Criar sala x1:** cria a sala neste PC e mostra o convite (link + QR).
+- **Criar sala num servidor:** cole o link de administração que o `lerrichat-host` mostra.
+
+Na sala, a barra de baixo controla voz, tela e câmera. Quem compartilha ganha um botão **Assistir** (ou **Câmera**) na lista de membros.
+
+<p align="center">
+  <img src="docs/inicio.png" width="410" alt="Tela inicial">
+  <img src="docs/sobre.png" width="410" alt="Tela Sobre">
+</p>
+
+Para **assistir** telas e câmeras, o `lerrichat.exe` precisa das DLLs do FFmpeg (build LGPL: `avcodec-63.dll`, `avutil-61.dll`, `swresample-7.dll`) ao lado dele ou numa pasta `ffmpeg` ao lado dele. Sem elas, todo o resto funciona e a sala avisa. Compartilhar não precisa delas.
+
+### Servidor (Proxmox, VPS)
+
+```sh
+lerrichat-host --public <IP ou domínio>    # mostra o link de administração e o link público
+```
+
+O relay usa a porta `P` em UDP (salas) e TCP (ponto de encontro), e `P+1` em UDP (descoberta de endereço). Atrás de um roteador, abra as três.
+
+### Linha de comando
+
+```sh
+lerrichat --x1                                # cria sala x1; convite no terminal
+lerrichat --x1 --via "lerrichat://relay?…"    # x1 com hole punching pelo seu relay
+lerrichat --cli --join "lerrichat://join?…"   # entra sem abrir a janela
+lerrichat --create "lerrichat://admin?…"      # cria sala no servidor
+lerrichat --open <id>                         # volta a uma sala salva
+lerrichat --register                          # faz os links lerrichat:// abrirem o app
+```
+
+Dentro da sala: `convite`, `membros`, `rota`, `/voz`, `/mudo`, `/desmutar`, `/sair-da-voz`, `/tela`, `/parar-tela`, `/camera`, `/parar-camera`, `/assistir PREFIXO`, `/ver-camera PREFIXO`, `/parar-de-assistir`, `sair`.
+
+## Compilar
 
 Requer Rust stable e, no Windows, as Build Tools do Visual Studio (MSVC + Windows SDK).
 
@@ -54,41 +112,29 @@ cargo build --release -p lerrichat          # target/release/lerrichat.exe
 cargo build --release -p lerrichat-host     # relay headless (Linux)
 ```
 
-## Usar
+## Como funciona por dentro
 
-**Primeira vez que abre:** o `.exe` não é assinado, então o Windows mostra "O Windows protegeu o computador". Clique em **Mais informações** e depois em **Executar assim mesmo**; das próximas vezes ele abre direto. Se for criar sala x1, o Windows também pode perguntar se o Lerri Chat pode usar a rede: permita.
+| Camada | Escolha |
+|--------|---------|
+| Rede | QUIC com [iroh](https://github.com/n0-computer/iroh) (só com o relay do usuário), IPv6, PCP/NAT-PMP/UPnP, hole punching |
+| Criptografia | [OpenMLS](https://github.com/openmls/openmls) para o grupo; SFrame com chave por remetente para voz e vídeo; identidade Ed25519 cifrada com DPAPI |
+| Mídia | WASAPI + Opus + AEC3; captura WGC/DXGI e encoders de hardware do Media Foundation; decode D3D11VA |
+| Interface | [Slint](https://slint.dev) com renderer software (sem driver gráfico carregado); vídeo em janela-filha D3D11, sem cópia para a CPU |
 
-Abra o `lerrichat.exe`: a janela tem **Entrar numa sala** (cole o convite), **Criar sala x1**, **Minhas salas** e **Criar sala num servidor**. Na sala aparecem o chat (cifrado de ponta a ponta), os membros (o dono pode remover; um anel roxo marca quem está falando), o convite (link + QR, botão de copiar), o caminho da conexão com a latência e a atividade. A barra de baixo controla a voz (entrar, mudo, ensurdecer, supressão forte de ruído), a tela (compartilhar o monitor escolhido; quem compartilha ganha um botão "Assistir" na lista de membros e a imagem aparece acima do chat) e a câmera (quem liga ganha um botão "Câmera" e a imagem aparece ao lado da tela). O botão **Sobre**, na tela inicial, mostra as licenças de terceiros. Na primeira vez que abre, ele registra os links `lerrichat://` para o seu usuário do Windows, então clicar num convite já abre a sala.
+O projeto é guiado por especificação: primeiro a spec, depois o código.
 
-Pela linha de comando (relay, testes):
+1. [`SPEC-00-visao.md`](SPEC-00-visao.md): requisitos e princípios
+2. [`SPEC-01-arquitetura.md`](SPEC-01-arquitetura.md): stack e desenho técnico
+3. [`SPEC-02-seguranca.md`](SPEC-02-seguranca.md): identidade, E2EE, convites, modelo de ameaça
+4. [`SPEC-03-rede.md`](SPEC-03-rede.md): QUIC, NAT, CGNAT, x1 × servidor
+5. [`SPEC-04-midia.md`](SPEC-04-midia.md): voz, tela e câmera
+6. [`SPEC-05-design-system.md`](SPEC-05-design-system.md): identidade visual
+7. [`SPEC-06-fases.md`](SPEC-06-fases.md): roadmap com critérios de aceite
 
-Sala x1, sem servidor (dois PCs):
+## Estado
 
-```sh
-lerrichat --x1                       # PC de quem cria: endereços, aviso de alcance e convite no terminal
-lerrichat --cli --join "lerrichat://join?…"  # PC do convidado (sem --cli, abre a janela)
-```
-
-Sala num servidor (Proxmox/VPS):
-
-```sh
-lerrichat-host --public <IP ou domínio>   # no servidor; mostra o link de administração e o link público
-lerrichat --create "lerrichat://admin?…"   # no seu PC: cria a sala e mostra o convite
-lerrichat --open <id>                      # volta a uma sala salva
-```
-
-x1 assistido (você tem um relay, mas a sala é direta entre os dois PCs):
-
-```sh
-lerrichat --x1 --via "lerrichat://relay?…"
-```
-
-`lerrichat --register` faz os links `lerrichat://` abrirem o programa. Dentro de uma sala: `convite`, `membros`, `rota`, `/voz`, `/mudo`, `/desmutar`, `/sair-da-voz`, `/tela`, `/parar-tela`, `/camera`, `/parar-camera`, `/assistir PREFIXO` e `/ver-camera PREFIXO` (decodificam sem mostrar e relatam fps e banda), `/parar-de-assistir`, `sair`.
-
-Para **assistir** telas e câmeras, o `lerrichat.exe` precisa das DLLs do FFmpeg (build LGPL: `avcodec-63.dll`, `avutil-61.dll`, `swresample-7.dll`) ao lado dele ou numa pasta `ffmpeg` ao lado dele. Sem elas, todo o resto funciona e a sala avisa que não dá para assistir. Compartilhar a tela ou ligar a câmera não precisa delas.
-
-O relay usa a porta `P` em UDP (salas), TCP (ponto de encontro) e `P+1` em UDP (descoberta de endereço). Atrás de um roteador, abra as três.
+Fases 0 a 6 implementadas: fundação, salas e convites, chat E2EE, voz, tela, câmera e interface. Testado na mesma máquina e na mesma rede; falta o teste entre dois PCs em redes diferentes e no servidor. Próximos passos: FFmpeg mínimo (hoje as DLLs do build completo somam ~95 MB), simulcast, push-to-talk, escolha de dispositivo de áudio. Detalhes e pendências em [`SPEC-06`](SPEC-06-fases.md).
 
 ## Escopo de uso
 
-Ferramenta de comunicação privada entre pessoas que trocam o código de convite por fora. Sem moderação central porque não há central. O dono de cada sala é responsável por quem convida.
+Ferramenta de comunicação privada entre pessoas que trocam o convite por fora. Não há moderação central porque não há central: o dono de cada sala responde por quem convida.

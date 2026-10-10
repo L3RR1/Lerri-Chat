@@ -12,6 +12,7 @@ Desenvolvimento guiado por especificação: cada fase tem escopo fechado, crité
 | D-02 | UI e render de vídeo sem cópia (`SPEC-01` §10) | **Decidido: Slint com renderer software + vídeo em janela-filha com swapchain D3D11** ([`spikes/video`](spikes/video/README.md)). |
 | D-03 | Decode: FFmpeg mínimo (D3D11VA) × MFT de hardware (`SPEC-01` §1) | **Decidido: FFmpeg LGPL com D3D11VA.** O MF não decodifica HEVC/AV1 sem a extensão da Store. |
 | D-04 | Transporte da tela: datagramas (como a voz) × um stream QUIC por quadro | **Decidido na Fase 4: stream por quadro** (`SPEC-03` §6.3). Keyframes têm centenas de pacotes; em datagramas, 1% de perda já os estragaria. O relay compensa o atraso pulando quadros até o próximo keyframe. |
+| D-05 | Assinatura de código do `.exe` (`SPEC-01` §9) | **Decidido na Fase 6: sem assinatura.** O app é para o grupo de amigos; o custo (certificado ou serviço em nuvem) não compensa agora. Na primeira vez, o SmartScreen pede "Mais informações → Executar assim mesmo", e o README explica. Rever se o app for distribuído para fora do grupo. |
 | P-01 | Casar os hex de roxo com o `Color.kt` do LerriNFC (`SPEC-05`) | **Resolvida na Fase 6:** todos os tokens vêm do `Color.kt`; contraste AA conferido por teste (`crates/ui/tests/contrast.rs`). |
 
 ---
@@ -161,7 +162,7 @@ Escopo:
 - Telas de remover membro e sair (a lógica já existe desde a Fase 2).
 - Fricção do Windows: assinatura de código, explicação do firewall, tela "Sobre" com licenças — `SPEC-01` §9.
 
-Estado: **implementada, menos a assinatura de código; falta o teste com um convidado leigo.** O que entrou:
+Estado: **implementada; falta o teste com um convidado leigo.** Sem assinatura de código (D-05). O que entrou:
 - **Paleta do LerriNFC** (P-01) em todas as telas, com campo de texto, caixa de seleção e lista de escolha próprios: os do `std-widgets` usam o azul do Fluent e o Slint 1.18 não deixa trocar as cores do `Palette`.
 - **Sala no layout do `SPEC-05` §4:** barra de controle embaixo (voz · tela · câmera) com linha de estado em texto, membros, detalhes da mídia e atividade à direita. Uma sala por vez, então a lista de salas fica na tela inicial em vez de numa barra lateral.
 - **Indicador de rede** com caminho e latência; a cor segue a qualidade (bom < 120 ms e direto, atenção ≥ 120 ms ou pelo ponto de encontro, ruim ≥ 300 ms).
@@ -176,7 +177,7 @@ Aceite:
 - [ ] Convidado leigo entra em < 60 s a partir do download, num Windows limpo. *Falta testar com uma pessoa. Sem assinatura de código, o SmartScreen ainda vai pedir "Mais informações → Executar assim mesmo".*
 - [x] Telas só com tokens da paleta; todos os pares texto/fundo passam AA. *`crates/ui/tests/contrast.rs` lê o `global Theme` e confere cada par usado. Exceções: o QR (preto no branco) e a barra de rolagem padrão.*
 
-Fora desta entrega: assinatura de código (precisa de certificado; `SPEC-01` §9), anel de "falando" pulsante (é estático), indicador de latência por membro (só o caminho até o host) e push-to-talk.
+Fora desta entrega: assinatura de código (D-05), anel de "falando" pulsante (é estático), indicador de latência por membro (só o caminho até o host) e push-to-talk.
 
 ---
 

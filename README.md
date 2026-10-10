@@ -56,6 +56,8 @@ cargo build --release -p lerrichat-host     # relay headless (Linux)
 
 ## Usar
 
+**Primeira vez que abre:** o `.exe` não é assinado, então o Windows mostra "O Windows protegeu o computador". Clique em **Mais informações** e depois em **Executar assim mesmo**; das próximas vezes ele abre direto. Se for criar sala x1, o Windows também pode perguntar se o Lerri Chat pode usar a rede: permita.
+
 Abra o `lerrichat.exe`: a janela tem **Entrar numa sala** (cole o convite), **Criar sala x1**, **Minhas salas** e **Criar sala num servidor**. Na sala aparecem o chat (cifrado de ponta a ponta), os membros (o dono pode remover; um anel roxo marca quem está falando), o convite (link + QR, botão de copiar), o caminho da conexão com a latência e a atividade. A barra de baixo controla a voz (entrar, mudo, ensurdecer, supressão forte de ruído), a tela (compartilhar o monitor escolhido; quem compartilha ganha um botão "Assistir" na lista de membros e a imagem aparece acima do chat) e a câmera (quem liga ganha um botão "Câmera" e a imagem aparece ao lado da tela). O botão **Sobre**, na tela inicial, mostra as licenças de terceiros. Na primeira vez que abre, ele registra os links `lerrichat://` para o seu usuário do Windows, então clicar num convite já abre a sala.
 
 Pela linha de comando (relay, testes):

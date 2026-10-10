@@ -120,7 +120,7 @@ A meta "convidado leigo entra em < 60 s" (`SPEC-00`) esbarra em barreiras do pr�
 
 | Barreira | Tratamento |
 |----------|------------|
-| **SmartScreen** ("O Windows protegeu o computador") em `.exe` sem assinatura | Orçar **assinatura de código** (certificado OV ou serviço de assinatura em nuvem da Microsoft; checar elegibilidade para pessoa física no Brasil). Até lá, a página de download explica o "Mais informações → Executar assim mesmo". |
+| **SmartScreen** ("O Windows protegeu o computador") em `.exe` sem assinatura | **Sem assinatura por decisão (D-05):** o app é para o grupo de amigos. O README explica o "Mais informações → Executar assim mesmo" da primeira execução. Se um dia for distribuído para fora do grupo: certificado OV ou serviço de assinatura em nuvem da Microsoft (checar elegibilidade para pessoa física no Brasil). |
 | **Antivírus** desconfiando de app que captura tela e abre porta UDP | Assinatura de código + envio do binário pra análise da Microsoft/fornecedores antes de cada release. |
 | **Firewall do Defender** ao escutar porta (criador no x1, relay no Windows) | A UI explica antes de o prompt aparecer. O cliente que só conecta não dispara prompt. |
 | **Handler `lerrichat://`** | Registrado em `HKCU\Software\Classes` na primeira execução — sem admin, sem instalador. Colar o link no app sempre funciona como alternativa. |

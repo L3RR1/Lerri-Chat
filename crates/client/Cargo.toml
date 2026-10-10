@@ -1,0 +1,13 @@
+[package]
+name = "lerri-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+lerri-core = { version = "0.0.1", path = "../core" }
+lerri-net = { version = "0.0.1", path = "../net" }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time"] }
+tracing = "0.1.44"

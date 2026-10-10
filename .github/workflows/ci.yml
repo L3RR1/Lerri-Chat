@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # RNF-02: binário < 25 MB.
+  MAX_EXE_BYTES: 26214400
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build --release -p lerrichat
+      - name: Tamanho do binário (RNF-02)
+        shell: pwsh
+        run: |
+          $size = (Get-Item target/release/lerrichat.exe).Length
+          "lerrichat.exe: {0:N1} MB" -f ($size / 1MB)
+          if ($size -gt $env:MAX_EXE_BYTES) { throw "lerrichat.exe passou de 25 MB" }
+      - name: Eco ponta a ponta
+        shell: pwsh
+        run: |
+          $exe = "target/release/lerrichat.exe"
+          $relay = Start-Process $exe -ArgumentList "--host","--bind","127.0.0.1:47999","--data-dir","$env:RUNNER_TEMP/relay" -RedirectStandardOutput relay.out -PassThru
+          for ($i = 0; $i -lt 50 -and -not (Select-String -Path relay.out -Pattern Fingerprint -Quiet -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 200 }
+          $fp = (Select-String -Path relay.out -Pattern '^Fingerprint: (\w+)').Matches[0].Groups[1].Value
+          & $exe --data-dir "$env:RUNNER_TEMP/cli" --connect 127.0.0.1:47999 --fingerprint $fp --message ci
+          $code = $LASTEXITCODE
+          Stop-Process $relay.Id
+          if ($code -ne 0) { throw "eco falhou" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lerrichat-windows
+          path: target/release/lerrichat.exe
+
+  linux-host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Só o que o relay usa: sem ui/media (SPEC-01 §2).
+      - run: cargo clippy -p lerri-core -p lerri-crypto -p lerri-net -p lerri-host -p lerrichat-host --all-targets -- -D warnings
+      - run: cargo test -p lerri-core -p lerri-crypto -p lerri-net -p lerri-host
+      - run: cargo build --release -p lerrichat-host
+      - run: ls -lh target/release/lerrichat-host
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lerrichat-host-linux
+          path: target/release/lerrichat-host

@@ -32,7 +32,7 @@ Fora de escopo: UI real, convites, chat.
 Aceite:
 - [x] `lerrichat.exe` e `lerrichat.exe --host` sobem e trocam uma mensagem por QUIC (IPv4 e IPv6; certificado do relay fixado por fingerprint). *`lerrichat-host` no Linux: compila na CI, ainda não rodado num servidor real.*
 - [x] Identidade persiste cifrada (DPAPI) entre reinícios.
-- [x] Binário < 25 MB (RNF-02), partida < 1,5 s (RNF-09). *Medido sem UI: 2,7 MB e ~30 ms. Remedido na Fase 6, com UI, voz, tela e câmera: 22,8 MiB e janela criada em 42–91 ms.*
+- [x] Binário < 25 MB (RNF-02), partida < 1,5 s (RNF-09). *Medido sem UI: 2,7 MB e ~30 ms. Remedido na Fase 6, com UI, voz, tela e câmera: 23,1 MiB (com o ícone) e janela criada em 42–91 ms.*
 - [x] Spike de vídeo: 1080p60 decodificado e exibido com CPU < 5% → D-02 e D-03 registradas. *HEVC 1080p60: 60 fps, 0,14% da máquina, 58 MB de RAM.*
 - [x] Spike de rede: resultado registrado em D-01. *Conecta só pelo relay próprio e migra para direto em ~150 ms; NAT real fica para a Fase 1.*
 
@@ -169,13 +169,14 @@ Estado: **implementada, menos a assinatura de código; falta o teste com um conv
 - **Firewall:** aviso no cartão "Criar sala x1", antes de o Windows perguntar.
 - **Tela "Sobre"** com versão, o que o app faz na rede e as licenças de terceiros (inclui a atribuição do Slint exigida pela licença royalty-free).
 - Botões, caixa de seleção e lista de escolha acessíveis por leitor de tela (papel, estado e ação padrão via UI Automation).
+- **Ícone do app** (mascote) no `.exe` e na janela (`SPEC-05` §7).
 
 Aceite:
 - [x] RAM ociosa < 80 MB (RNF-01). *Release, processo real: 22 MB na tela inicial e 37 MB numa sala x1 parada hospedando a sala (working set).*
 - [ ] Convidado leigo entra em < 60 s a partir do download, num Windows limpo. *Falta testar com uma pessoa. Sem assinatura de código, o SmartScreen ainda vai pedir "Mais informações → Executar assim mesmo".*
 - [x] Telas só com tokens da paleta; todos os pares texto/fundo passam AA. *`crates/ui/tests/contrast.rs` lê o `global Theme` e confere cada par usado. Exceções: o QR (preto no branco) e a barra de rolagem padrão.*
 
-Fora desta entrega: assinatura de código (precisa de certificado; `SPEC-01` §9), ícone do app, anel de "falando" pulsante (é estático), indicador de latência por membro (só o caminho até o host) e push-to-talk.
+Fora desta entrega: assinatura de código (precisa de certificado; `SPEC-01` §9), anel de "falando" pulsante (é estático), indicador de latência por membro (só o caminho até o host) e push-to-talk.
 
 ---
 

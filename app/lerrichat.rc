@@ -1,0 +1,2 @@
+// Icone do .exe (Explorer, atalhos). O da janela vem do Slint (crates/ui/ui/icon.png).
+1 ICON "assets/lerrichat.ico"

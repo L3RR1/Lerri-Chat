@@ -98,7 +98,7 @@ Como ficou na Fase 6: o app abre **uma sala por vez**, então no lugar da barra 
 ## 7. Ícone / marca
 
 - Herdar a linguagem do ícone do LerriNFC (criatura roxa, olhos verdes, fundo preto) como família visual, sem copiar o mesmo desenho.
-- App icon: monograma/símbolo roxo sobre `ink`.
+- App icon: o mascote roxo de olhos verdes (arte `LCOREMASCOTE`, sem o texto "CHAT", que vira borrão em tamanho pequeno). `app/assets/lerrichat.ico` vai embutido no `.exe` com 16–256 px: de 48 px para cima o desenho inteiro, até 32 px só a cabeça, para os olhos continuarem legíveis. A janela usa `crates/ui/ui/icon.png` (cabeça, 64 px), porque só aparece pequena (título, barra de tarefas).
 
 ## 8. Acessibilidade
 

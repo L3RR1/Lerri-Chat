@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Identificador de um membro: SHA-256 da chave pública Ed25519 (SPEC-02 §1).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MemberId(pub [u8; 32]);
 
 impl MemberId {
@@ -26,7 +26,7 @@ impl fmt::Debug for MemberId {
 }
 
 /// Identificador aleatório de sala (SPEC-01 §6).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RoomId(pub [u8; 16]);
 
 impl fmt::Display for RoomId {

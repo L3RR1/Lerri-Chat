@@ -45,15 +45,17 @@ Escopo:
 - Convites de uso único com `t` (roteamento) e `s` (admissão) + QR — `RF-03`, `SPEC-02` §3. Nesta fase o relay valida e consome `t`; a verificação de `s` entra na Fase 2, junto com o MLS.
 - Entrada colando o link ou abrindo o `lerrichat://` (handler em HKCU) — `RF-04`.
 - Conectividade x1 sem infra: IPv6 + PCP/NAT-PMP/UPnP + aviso de criador inalcançável (`SPEC-03` §4.2).
-- Conectividade x1 assistida: STUN embutido no relay, sinalização, hole punching e relay de último caso (`SPEC-03` §4.3).
+- Conectividade x1 assistida: descoberta de endereço (QAD) no relay, sinalização, hole punching e relay de último caso (`SPEC-03` §4.3).
+
+Estado: **implementado; falta o teste com redes reais.** Sem UI ainda: tudo pela linha de comando (`lerrichat --x1`, `--create`, `--join`, `--open`, `--register`). Detalhes em `SPEC-02` §3.4 e `SPEC-03` §4.5.
 
 Aceite:
-- [ ] Criar sala nos dois modos.
-- [ ] Reuso de convite é recusado.
-- [ ] x1 sem infra conecta quando o criador tem IPv6 ou porta mapeada; avisa na criação quando não tem.
-- [ ] x1 assistido: dois peers em NATs comuns conectam por hole punching, com mídia direta.
-- [ ] Cliente alcança o SFU no Proxmox com porta UDP aberta ou via IPv6.
-- [ ] Nenhum STUN/relay de terceiros é contatado.
+- [x] Criar sala nos dois modos. *Testes automatizados e binário real.*
+- [x] Reuso de convite é recusado. *Também convite expirado, desconhecido e emitido por quem não é dono.*
+- [ ] x1 sem infra conecta quando o criador tem IPv6 ou porta mapeada; avisa na criação quando não tem. *Implementado. Conexão testada só na mesma máquina/LAN. Falta: convidado em outra rede chegando pelo IPv6. No roteador do Lerri o UPnP falhou.*
+- [ ] x1 assistido: dois peers em NATs comuns conectam por hole punching, com mídia direta. *Implementado. Na mesma máquina, conecta só pelo ponto de encontro e migra para direto. Falta: dois PCs em redes diferentes.*
+- [ ] Cliente alcança o SFU no Proxmox com porta UDP aberta ou via IPv6. *Falta rodar o `lerrichat-host` no servidor.*
+- [ ] Nenhum STUN/relay de terceiros é contatado. *Garantido pela configuração (preset `Minimal`, só o relay do usuário, resolvedor só com o DNS do sistema, checagem de portal cativo desligada). Falta confirmar com captura de rede.*
 
 ---
 

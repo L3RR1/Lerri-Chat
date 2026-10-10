@@ -1,54 +1,95 @@
-use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
-use std::sync::Arc;
-use std::time::Duration;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::Context;
-use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
-use quinn::{Endpoint, EndpointConfig, TokioRuntime, TransportConfig};
-use socket2::{Domain, Protocol, Socket, Type};
+use iroh::dns::DnsResolver;
+use iroh::endpoint::{BindOpts, PortmapperConfig, presets};
+use iroh::{Endpoint, EndpointAddr, NetReportConfig, PublicKey, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr};
+use iroh_relay::RelayQuicConfig;
+use lerri_core::invite::{Candidate, HostAddr, MeetingPoint};
+use lerri_core::protocol::ALPN;
 
-use crate::tls::{self, Fingerprint, RelayCert};
+use crate::dns::{LocalResolver, MEET_HOST};
+use crate::pin;
 
-/// Abre um socket UDP. Endereço IPv6 não especificado (`[::]`) vira
-/// dual-stack: o Windows cria sockets IPv6 só-v6 por padrão, e o relay precisa
-/// aceitar IPv4 e IPv6 na mesma porta (SPEC-03 §4.1).
-pub fn bind_udp(addr: SocketAddr) -> io::Result<UdpSocket> {
-    let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
-    if let SocketAddr::V6(v6) = addr
-        && v6.ip().is_unspecified()
-    {
-        socket.set_only_v6(false)?;
+pub struct EndpointOpts {
+    pub secret: SecretKey,
+    /// Porta UDP fixa (relay e host do x1) ou `0` para uma qualquer.
+    pub port: u16,
+    /// Ponto de encontro (relay iroh). Sem ele, só caminhos diretos.
+    pub meet: Option<MeetingPoint>,
+    /// Aceita conexões do protocolo do Lerri Chat (host de sala).
+    pub accept: bool,
+    /// Pede mapeamento de porta ao roteador (PCP/NAT-PMP/UPnP, SPEC-03 §4.2).
+    /// Só faz sentido para quem recebe conexões.
+    pub portmap: bool,
+}
+
+/// Relay iroh de um ponto de encontro. Dado por IP, usa o nome sintético
+/// [`MEET_HOST`] (ver [`crate::dns`]).
+pub fn meeting_relay(meet: &MeetingPoint) -> anyhow::Result<RelayConfig> {
+    let host = if meet.host.parse::<IpAddr>().is_ok() { MEET_HOST } else { meet.host.as_str() };
+    let url: RelayUrl = format!("https://{host}:{}", meet.port)
+        .parse()
+        .with_context(|| format!("ponto de encontro inválido: {}", meet.url()))?;
+    let mut cfg = RelayConfig::from(url);
+    cfg.quic = Some(RelayQuicConfig::new(meet.quic_port));
+    Ok(cfg)
+}
+
+pub async fn bind(opts: EndpointOpts) -> anyhow::Result<Endpoint> {
+    let mut b = Endpoint::builder(presets::Minimal)
+        .secret_key(opts.secret)
+        .alpns(if opts.accept { vec![ALPN.to_vec()] } else { vec![] })
+        .portmapper_config(if opts.portmap { PortmapperConfig::default() } else { PortmapperConfig::Disabled })
+        .net_report_config(net_report())
+        .dns_resolver(DnsResolver::custom(resolver(opts.meet.as_ref())));
+    b = match &opts.meet {
+        Some(m) => b
+            .relay_mode(RelayMode::Custom(RelayMap::from_iter([meeting_relay(m)?])))
+            .ca_tls_config(pin::ca_config(m.key)),
+        None => b.relay_mode(RelayMode::Disabled),
+    };
+    if opts.port != 0 {
+        b = b
+            .bind_addr((Ipv4Addr::UNSPECIFIED, opts.port))?
+            // Sem IPv6 na máquina, segue só com IPv4.
+            .bind_addr_with_opts((Ipv6Addr::UNSPECIFIED, opts.port), BindOpts::default().set_is_required(false))?;
     }
-    socket.bind(&addr.into())?;
-    Ok(socket.into())
+    b.bind().await.with_context(|| format!("não foi possível abrir a porta UDP {}", opts.port))
 }
 
-fn transport() -> Arc<TransportConfig> {
-    let mut t = TransportConfig::default();
-    t.keep_alive_interval(Some(Duration::from_secs(10)));
-    Arc::new(t)
+/// Converte o endereço do convite para o iroh, resolvendo hostnames pelo DNS
+/// do sistema.
+pub async fn endpoint_addr(host: &HostAddr) -> anyhow::Result<EndpointAddr> {
+    let key = PublicKey::from_bytes(&host.key).context("chave do host inválida")?;
+    let mut addrs = Vec::new();
+    for c in &host.candidates {
+        match c {
+            Candidate::Ip(a) => addrs.push(TransportAddr::Ip(*a)),
+            Candidate::Name(name, port) => match tokio::net::lookup_host((name.as_str(), *port)).await {
+                Ok(resolved) => addrs.extend(resolved.map(TransportAddr::Ip)),
+                Err(e) => tracing::warn!("{name} não resolveu: {e}"),
+            },
+        }
+    }
+    if let Some(m) = &host.meet {
+        addrs.push(TransportAddr::Relay(meeting_relay(m)?.url));
+    }
+    anyhow::ensure!(!addrs.is_empty(), "o convite não tem nenhum caminho até o host");
+    Ok(EndpointAddr::from_parts(key, addrs))
 }
 
-/// Endpoint do relay, escutando em `bind`.
-pub fn server_endpoint(bind: SocketAddr, cert: &RelayCert) -> anyhow::Result<Endpoint> {
-    let crypto = QuicServerConfig::try_from(tls::server_crypto(cert)?)?;
-    let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-    cfg.transport_config(transport());
-    let socket = bind_udp(bind).with_context(|| format!("não foi possível escutar em {bind}"))?;
-    Ok(Endpoint::new(EndpointConfig::default(), Some(cfg), socket, Arc::new(TokioRuntime))?)
+/// Sem a detecção de portal cativo: ela faz um GET em HTTP puro na porta 80
+/// do relay, que o ponto de encontro do Lerri Chat não expõe.
+fn net_report() -> NetReportConfig {
+    let mut cfg = NetReportConfig::default();
+    cfg.captive_portal_check = false;
+    cfg
 }
 
-/// Endpoint de cliente que só confia no relay com o fingerprint `pinned`.
-/// Prefere um socket dual-stack e cai para só-IPv4 em máquinas sem IPv6.
-pub fn client_endpoint(pinned: Fingerprint) -> anyhow::Result<Endpoint> {
-    let socket = bind_udp((Ipv6Addr::UNSPECIFIED, 0).into())
-        .or_else(|_| bind_udp((Ipv4Addr::UNSPECIFIED, 0).into()))
-        .context("não foi possível abrir socket UDP")?;
-    let mut endpoint = Endpoint::new(EndpointConfig::default(), None, socket, Arc::new(TokioRuntime))?;
-    let crypto = QuicClientConfig::try_from(tls::client_crypto(pinned)?)?;
-    let mut cfg = quinn::ClientConfig::new(Arc::new(crypto));
-    cfg.transport_config(transport());
-    endpoint.set_default_client_config(cfg);
-    Ok(endpoint)
+fn resolver(meet: Option<&MeetingPoint>) -> LocalResolver {
+    match meet.and_then(|m| m.host.parse::<IpAddr>().ok()) {
+        Some(ip) => LocalResolver::with(MEET_HOST, vec![ip]),
+        None => LocalResolver::default(),
+    }
 }

@@ -28,17 +28,28 @@ jobs:
           $size = (Get-Item target/release/lerrichat.exe).Length
           "lerrichat.exe: {0:N1} MB" -f ($size / 1MB)
           if ($size -gt $env:MAX_EXE_BYTES) { throw "lerrichat.exe passou de 25 MB" }
-      - name: Eco ponta a ponta
+      - name: Sala e convite ponta a ponta
         shell: pwsh
         run: |
           $exe = "target/release/lerrichat.exe"
-          $relay = Start-Process $exe -ArgumentList "--host","--bind","127.0.0.1:47999","--data-dir","$env:RUNNER_TEMP/relay" -RedirectStandardOutput relay.out -PassThru
-          for ($i = 0; $i -lt 50 -and -not (Select-String -Path relay.out -Pattern Fingerprint -Quiet -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 200 }
-          $fp = (Select-String -Path relay.out -Pattern '^Fingerprint: (\w+)').Matches[0].Groups[1].Value
-          & $exe --data-dir "$env:RUNNER_TEMP/cli" --connect 127.0.0.1:47999 --fingerprint $fp --message ci
-          $code = $LASTEXITCODE
-          Stop-Process $relay.Id
-          if ($code -ne 0) { throw "eco falhou" }
+          $t = $env:RUNNER_TEMP
+          $relay = Start-Process $exe -ArgumentList "--host","--port","47990","--data-dir","$t/relay" -RedirectStandardOutput relay.out -RedirectStandardError relay.err -PassThru
+          for ($i = 0; $i -lt 100 -and -not (Select-String -Path relay.out -Pattern '^lerrichat://admin' -Quiet -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 200 }
+          $admin = (Select-String -Path relay.out -Pattern '^lerrichat://admin.*').Matches[0].Value
+          if (-not $admin) { Get-Content relay.out, relay.err; throw "relay não subiu" }
+          try {
+            $owner = "sair" | & $exe --data-dir "$t/owner" --create $admin
+            if ($LASTEXITCODE -ne 0) { $owner; throw "criar sala falhou" }
+            $invite = ($owner | Select-String -Pattern '^lerrichat://join.*').Matches[0].Value
+            $guest = "sair" | & $exe --data-dir "$t/guest" $invite
+            if ($LASTEXITCODE -ne 0) { $guest; throw "entrar pelo convite falhou" }
+            $again = "sair" | & $exe --data-dir "$t/intruder" $invite 2>&1
+            if ($LASTEXITCODE -eq 0 -or -not ($again -match 'foi usado')) { $again; throw "convite reutilizado foi aceito" }
+          } finally {
+            Stop-Process $relay.Id
+          }
+          # A recusa esperada deixou LASTEXITCODE=1, que o Actions trataria como falha.
+          exit 0
       - uses: actions/upload-artifact@v4
         with:
           name: lerrichat-windows

@@ -4,6 +4,7 @@ use std::path::Path;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use lerri_core::MemberId;
+use lerri_core::protocol::{MemberProof, hello_message};
 use sha2::{Digest, Sha256};
 
 use crate::secret_store::{self, StoreError};
@@ -57,6 +58,22 @@ impl Identity {
     pub fn sign(&self, msg: &[u8]) -> Signature {
         self.key.sign(msg)
     }
+
+    /// Assina a entrada nesta conexão (ver [`hello_message`]).
+    pub fn prove(&self, host_key: &[u8; 32], client_key: &[u8; 32]) -> MemberProof {
+        MemberProof {
+            identity_key: self.key.verifying_key().to_bytes(),
+            signature: self.sign(&hello_message(host_key, client_key)).to_bytes().to_vec(),
+        }
+    }
+}
+
+/// Confere uma [`MemberProof`] e devolve o `MemberId` provado.
+pub fn verify_proof(proof: &MemberProof, host_key: &[u8; 32], client_key: &[u8; 32]) -> Option<MemberId> {
+    let key = VerifyingKey::from_bytes(&proof.identity_key).ok()?;
+    let sig = Signature::from_slice(&proof.signature).ok()?;
+    key.verify_strict(&hello_message(host_key, client_key), &sig).ok()?;
+    Some(member_id_of(&key))
 }
 
 pub fn member_id_of(key: &VerifyingKey) -> MemberId {
@@ -93,5 +110,17 @@ mod tests {
         assert!(verify(&id.verifying_key(), b"oi", &sig));
         assert!(!verify(&id.verifying_key(), b"tchau", &sig));
         assert_ne!(id.member_id(), Identity::generate().unwrap().member_id());
+    }
+
+    #[test]
+    fn proof_is_bound_to_connection() {
+        let id = Identity::generate().unwrap();
+        let proof = id.prove(&[1; 32], &[2; 32]);
+        assert_eq!(verify_proof(&proof, &[1; 32], &[2; 32]), Some(id.member_id()));
+        assert_eq!(verify_proof(&proof, &[1; 32], &[3; 32]), None);
+        assert_eq!(verify_proof(&proof, &[9; 32], &[2; 32]), None);
+        let mut bad = proof.clone();
+        bad.identity_key = Identity::generate().unwrap().verifying_key().to_bytes();
+        assert_eq!(verify_proof(&bad, &[1; 32], &[2; 32]), None);
     }
 }

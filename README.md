@@ -36,7 +36,8 @@ Desenvolvimento guiado por especificação (SDD). Primeiro a spec, depois o cód
 
 ## Estado
 
-**Fase 0 — Fundação, concluída.** Workspace, identidade local cifrada, eco QUIC entre cliente e relay, e os spikes que fecharam as decisões D-01 a D-03 (ver [`SPEC-06`](SPEC-06-fases.md), [`spikes/video`](spikes/video/README.md) e [`spikes/p2p`](spikes/p2p/README.md)). Próxima: Fase 1.
+- **Fase 0 — Fundação, concluída.** Workspace, identidade local cifrada e os spikes que fecharam as decisões D-01 a D-03 (ver [`SPEC-06`](SPEC-06-fases.md), [`spikes/video`](spikes/video/README.md) e [`spikes/p2p`](spikes/p2p/README.md)).
+- **Fase 1 — Salas, convites e conectividade: implementada, falta o teste com redes reais.** Salas nos dois modos, convites de uso único com QR, links `lerrichat://`, x1 direto e x1 assistido pelo ponto de encontro do seu relay. Ainda sem interface gráfica.
 
 ## Compilar e testar
 
@@ -48,12 +49,32 @@ cargo build --release -p lerrichat          # target/release/lerrichat.exe
 cargo build --release -p lerrichat-host     # relay headless (Linux)
 ```
 
-Eco de teste em dois terminais:
+## Usar (linha de comando, por enquanto)
+
+Sala x1, sem servidor (dois PCs):
 
 ```sh
-lerrichat --host                                         # mostra porta e fingerprint
-lerrichat --connect 127.0.0.1:<porta> --fingerprint <hex>
+lerrichat --x1                  # PC de quem cria: mostra endereços, aviso de alcance e o convite (texto + QR)
+lerrichat "lerrichat://join?…"  # PC do convidado
 ```
+
+Sala num servidor (Proxmox/VPS):
+
+```sh
+lerrichat-host --public <IP ou domínio>   # no servidor; mostra o link de administração e o link público
+lerrichat --create "lerrichat://admin?…"   # no seu PC: cria a sala e mostra o convite
+lerrichat --open <id>                      # volta a uma sala salva
+```
+
+x1 assistido (você tem um relay, mas a sala é direta entre os dois PCs):
+
+```sh
+lerrichat --x1 --via "lerrichat://relay?…"
+```
+
+`lerrichat --register` faz os links `lerrichat://` abrirem o programa. Dentro de uma sala: `convite`, `membros`, `rota`, `sair`.
+
+O relay usa a porta `P` em UDP (salas), TCP (ponto de encontro) e `P+1` em UDP (descoberta de endereço). Atrás de um roteador, abra as três.
 
 ## Escopo de uso
 

@@ -8,6 +8,9 @@ publish.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 lerri-core = { version = "0.0.1", path = "../core" }
+lerri-crypto = { version = "0.0.1", path = "../crypto" }
 lerri-net = { version = "0.0.1", path = "../net" }
-tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time"] }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 tracing = "0.1.44"

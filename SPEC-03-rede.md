@@ -34,7 +34,7 @@ Conclusão: Cloudflare fica fora do caminho de mídia. As opções reais estão 
   - **Container LXC no Proxmox de casa** (o caso do Lerri): leve, sobra recurso. Precisa de porta UDP acessível.
   - **VPS barata** (~R$15–25/mês): já vem com IP público, resolve NAT de uma vez.
 - Aguenta 3–10 pessoas e sobrevive a qualquer cliente sair.
-- Também serve de **STUN, ponto de encontro e relay de último caso** para salas x1 (§4.3).
+- Também serve de **ponto de encontro** (descoberta de endereço público, coordenação de hole punching e relay de último caso) para salas x1 (§4.3).
 
 A escolha é do usuário na criação da sala. O app suporta os dois; o convite carrega como achar o relay.
 
@@ -61,7 +61,7 @@ Se nenhum candidato for alcançável (sem IPv6, roteador sem PCP/UPnP, ou **CGNA
 ### 4.3 Modo x1 assistido por relay
 Quando o usuário tem um relay (modo servidor) configurado, o x1 pode usá-lo **só para coordenação**:
 
-1. **STUN embutido no relay** — cada peer descobre seu IP:porta público. **Não se usa STUN público** (contraria o "zero terceiros").
+1. **Descoberta de endereço no relay** — cada peer descobre seu IP:porta público pelo QAD (QUIC Address Discovery, o substituto do STUN no iroh), servido pelo próprio relay. **Não se usa STUN público** (contraria o "zero terceiros").
 2. **Sinalização** — os dois peers trocam candidatos pelo relay, em tempo real.
 3. **Hole punching** — os dois mandam pacotes UDP ao mesmo tempo pra abrir o caminho nos NATs. Se der certo, a mídia vai **direto**, sem passar pelo relay.
 4. **Relay de último caso** — se o furo falhar (ex.: CGNAT dos dois lados), o próprio relay repassa os pacotes cifrados. Continua cego.
@@ -80,6 +80,14 @@ Hole punching sobre QUIC não vem pronto no `quinn`. Opções avaliadas no spike
 - A chave de transporte do iroh **não** é a chave de identidade do membro (`SPEC-02` §1). Usar chave de transporte própria, para o relay não ligar a mesma pessoa entre salas.
 
 Resultado do spike, na mesma máquina: conectou só pelo relay em ~31 ms, migrou para caminho direto em ~150 ms e entregou 1000/1000 datagramas. **Falta validar com NAT real (Fase 1).**
+
+### 4.5 Como ficou na Fase 1
+- **Ponto de encontro** = `iroh-relay` embutido no relay do Lerri Chat. O certificado TLS dele é autoassinado com uma chave Ed25519 própria, e o cliente aceita **só** quem prova ter a chave que veio no convite (assinatura do handshake TLS 1.3 conferida contra a chave fixada). Chave errada → `BadSignature`, sem conexão.
+- **DNS:** o iroh usa um resolvedor próprio do Lerri Chat, só com o DNS do sistema. O resolvedor padrão do iroh tem servidores DNS públicos de reserva, o que contraria o "zero terceiros". Ponto de encontro dado por IP vira o nome sintético `meet.lerrichat.invalid` (resolvido localmente para o IP do convite), porque o cliente de relay do iroh 1.3 não aceita IPv6 literal na URL.
+- **Portal cativo:** a checagem do iroh (GET em HTTP na porta 80 do relay) fica desligada.
+- **x1 assistido:** o criador e o convidado usam o ponto de encontro do relay do usuário (link público `lerrichat://relay`); o convite pode não ter nenhum endereço direto. Testado na mesma máquina: conecta pelo relay e migra para direto.
+- **No Windows**, o ponto de encontro escuta só IPv4: o `iroh-relay` não permite socket dual-stack e `[::]` no Windows atende só IPv6. No Linux ele escuta `[::]` (IPv4 + IPv6).
+- **Mapeamento de porta** (PCP/NAT-PMP/UPnP) vem do iroh e é pedido por quem recebe conexões (relay e criador do x1). No roteador do Lerri, o UPnP **falhou**; lá, o x1 sem infra depende do IPv6.
 
 ## 5. Cenários de rede do host caseiro (Proxmox)
 
@@ -128,7 +136,12 @@ Para que cada destinatário receba o que a conexão dele aguenta (codec em `SPEC
 
 ## 7. Portas e descoberta
 
-- O relay usa **uma porta UDP** configurável (padrão sugerido: 47xxx aleatório por instalação).
+- O relay usa uma porta `P` configurável (padrão: sorteada uma vez por instalação entre 47000 e 47998):
+  - **UDP `P`** — salas (QUIC);
+  - **TCP `P`** — ponto de encontro (HTTPS/WebSocket do iroh-relay, só para coordenação e último caso);
+  - **UDP `P+1`** — descoberta de endereço público (QAD).
+- Atrás de um roteador, o operador abre essas três e informa o IP ou domínio público com `--public`, que entra primeiro no convite.
+- O criador de uma sala x1 usa uma porta UDP qualquer (ou `--port`); o roteador é solicitado a mapeá-la.
 - O convite carrega a lista de candidatos (§4.1). Sem diretório, sem descoberta na LAN por padrão (pode virar opção futura).
 - **Firewall do Windows:** quem escuta (criador no x1, relay no Windows) dispara o prompt do Defender na primeira vez. A UI explica antes de o prompt aparecer (ver `SPEC-01` §9).
 

@@ -8,6 +8,7 @@ Status: **Draft** · Fase: 0 · Depende de: SPEC-00, SPEC-01
 - O **MemberId** é o hash da chave pública. É o único "nome" de um participante.
 - Sem e-mail, telefone, nome ou qualquer coletor de dado pessoal. Sem servidor de identidade.
 - Apelido (nickname) é opcional, local e livre — não é verificado nem único. Serve só pra leitura humana na sala.
+- **Chave de transporte ≠ identidade.** O QUIC (iroh) usa outra chave Ed25519: descartável por sessão no cliente, persistente no relay (ela está fixada nos convites). Assim o ponto de encontro e quem observa a rede não ligam a mesma pessoa entre salas pela chave de transporte. O relay de uma sala ainda vê o `MemberId` (§5).
 
 ## 2. Papéis
 
@@ -37,8 +38,10 @@ Se o relay validasse o convite **e** isso bastasse para entrar no grupo MLS, o o
 lerrichat://join?r=<room_id>&h=<host_addr>&t=<route_token>&s=<invite_secret>&f=<inviter_fpr>&e=<expires_at>
 ```
 
+Campos binários vão em base64url sem padding.
+
 - `r` — id da sala.
-- `h` — como achar o relay (IP:porta, hostname ou endereço IPv6; ver `SPEC-03` §4).
+- `h` — como achar o host da sala: a **chave pública de transporte** do host (fixa a conexão; quem não tem a chave privada não completa o handshake), a lista de candidatos (IP:porta ou hostname, `SPEC-03` §4.1) e, opcionalmente, o **ponto de encontro** (relay iroh) com a chave do certificado TLS dele. Serializado com postcard.
 - `t` — **token de roteamento** (128 bits). O relay guarda só `hash(t)` e o marca como consumido no primeiro uso. Serve para o relay aceitar a conexão e saber de qual sala ela é. **Não dá acesso ao conteúdo.**
 - `s` — **segredo de admissão** (256 bits). **Nunca é enviado ao relay.** Só os membros da sala o conhecem (§3.3).
 - `f` — fingerprint da chave de identidade de quem convidou, pra o novato validar quem o admitiu.
@@ -59,6 +62,14 @@ Consequências:
 - Convite expirado ou revogado → recusa antes de qualquer handshake de mídia.
 
 O link é exibido como texto (`lerrichat://...`) e como **QR**. Ele deve trafegar **por fora** (mensageiro, pessoalmente), nunca pelo próprio relay.
+
+### 3.4 Entrar numa conexão e criar salas
+
+- **Prova de identidade por conexão.** O primeiro frame de toda conexão carrega a chave de identidade do membro e uma assinatura Ed25519 sobre `"lerrichat/hello/v1" || chave do host || chave de transporte do cliente`. A assinatura só vale para aquela conexão; quem a captura não a reaproveita.
+- **Criar sala no modo servidor** exige o **segredo de administração** do relay, gerado na primeira execução e guardado em disco (DPAPI no Windows, 0600 no Linux). O relay o mostra num link `lerrichat://admin?h=&a=`, que é só de quem opera o servidor. Sem isso, qualquer um que achasse o relay poderia criar salas nele.
+- O relay também mostra um link **público** `lerrichat://relay?h=`, que serve de ponto de encontro para salas x1 (`SPEC-03` §4.3). Ele não dá acesso a nada.
+- **Voltar a uma sala** não usa convite: o relay confere que o `MemberId` provado já é membro.
+- No **x1**, o segredo de administração existe só na memória do app de quem cria.
 
 ## 4. Criptografia ponta a ponta (E2EE)
 

@@ -18,8 +18,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # Spikes são experimentos da Fase 0 (o de vídeo depende de FFmpeg em .deps/); ficam fora da CI.
+      - run: cargo clippy --workspace --exclude spike-video --exclude spike-p2p --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude spike-video --exclude spike-p2p
       - run: cargo build --release -p lerrichat
       - name: Tamanho do binário (RNF-02)
         shell: pwsh

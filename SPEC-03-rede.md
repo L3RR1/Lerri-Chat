@@ -4,7 +4,7 @@ Status: **Draft** · Fase: 0 · Depende de: SPEC-01, SPEC-02
 
 ## 1. Transporte: QUIC sobre UDP
 
-- Toda a comunicação (sinalização, texto, mídia) roda sobre **QUIC** (`quinn`).
+- Toda a comunicação (sinalização, texto, mídia) roda sobre **QUIC**, via **iroh** (D-01, §4.4).
 - **UDP** é obrigatório para tempo real: quando um pacote se perde, não trava os outros. TCP (e qualquer túnel só-TCP) causaria head-of-line blocking — um pacote perdido segura todo o fluxo, gerando engasgo e latência. Isso mata o RNF-06.
 - QUIC dá streams independentes: texto e sinalização num stream confiável, mídia em **datagramas não-confiáveis** (perda é tolerável em voz/vídeo; melhor perder um frame que atrasar).
 
@@ -66,15 +66,20 @@ Quando o usuário tem um relay (modo servidor) configurado, o x1 pode usá-lo **
 3. **Hole punching** — os dois mandam pacotes UDP ao mesmo tempo pra abrir o caminho nos NATs. Se der certo, a mídia vai **direto**, sem passar pelo relay.
 4. **Relay de último caso** — se o furo falhar (ex.: CGNAT dos dois lados), o próprio relay repassa os pacotes cifrados. Continua cego.
 
-### 4.4 Implementação: decisão pendente (D-01)
-Hole punching sobre QUIC não vem pronto no `quinn`. Duas opções, decididas no spike da Fase 0 (`SPEC-06`):
+### 4.4 Implementação: iroh com relay próprio (D-01, decidido)
+Hole punching sobre QUIC não vem pronto no `quinn`. Opções avaliadas no spike da Fase 0 ([`spikes/p2p`](spikes/p2p/README.md)):
 
 | Opção | Prós | Contras |
 |-------|------|---------|
-| **iroh** (n0, Rust, QUIC sobre `quinn` com hole punching e relays) | Resolve sinalização, hole punching e fallback; maduro | Por padrão usa relays públicos da n0 → **precisa rodar só com relay próprio**; o relay dele pode cair pra HTTPS/TCP no fallback; adiciona dependência e tamanho |
+| **iroh 1.x** (n0, Rust, QUIC sobre `noq`, um fork do `quinn`, com hole punching e relays) | Resolve sinalização, hole punching, mapeamento de porta (PCP/UPnP) e fallback; maduro | Por padrão usa relays e DNS da n0 → **roda só com relay próprio**; o relay repassa por HTTPS/TCP no último caso; +~4–5 MB de binário |
 | **Implementação própria** sobre `quinn` (socket UDP compartilhado entre STUN, punching e QUIC) | Controle total, binário menor | Meses de trabalho e muitos casos de borda de NAT |
 
-Recomendação inicial: **iroh**, configurado só com o relay do próprio usuário.
+**Escolhido: iroh.** Configuração obrigatória:
+- `presets::Minimal` + `RelayMode::Custom(<relay do usuário>)`. Nunca `presets::N0` nem `RelayMode::Default`.
+- O relay do Lerri Chat embute o `iroh-relay` ao lado do SFU.
+- A chave de transporte do iroh **não** é a chave de identidade do membro (`SPEC-02` §1). Usar chave de transporte própria, para o relay não ligar a mesma pessoa entre salas.
+
+Resultado do spike, na mesma máquina: conectou só pelo relay em ~31 ms, migrou para caminho direto em ~150 ms e entregou 1000/1000 datagramas. **Falta validar com NAT real (Fase 1).**
 
 ## 5. Cenários de rede do host caseiro (Proxmox)
 
@@ -109,7 +114,7 @@ O SFU **não decodifica vídeo** — só copia pacotes cifrados. Um **i5 de 8ª 
 ### 6.1 QUIC × controle de bitrate da mídia
 Datagramas QUIC **também passam pelo controle de congestionamento do QUIC**. Se o encoder mandar mais do que a janela do QUIC permite, os datagramas ficam na fila (latência) ou são descartados — e os dois controles brigam entre si. Regras:
 
-- Usar **BBR** no `quinn` (menos sensível a perda isolada e não enche buffer como o Cubic).
+- Usar **BBR** no QUIC do iroh (menos sensível a perda isolada e não enche buffer como o Cubic). *Confirmar na Fase 3 se o iroh 1.x expõe a escolha do controlador.*
 - **Fila de envio de datagramas curta**: datagrama velho é descartado, nunca atrasado (melhor perder que enfileirar).
 - **Controle de bitrate da mídia na aplicação**, com feedback do receptor (perda e atraso por número de sequência do cabeçalho SFrame) + RTT/janela do QUIC. O encoder é configurado **abaixo** da taxa que o QUIC estima disponível.
 - Prioridade quando falta banda: **voz > tela > câmera**.

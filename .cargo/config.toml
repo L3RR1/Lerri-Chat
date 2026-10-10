@@ -1,0 +1,5 @@
+# Só o spike de vídeo usa: FFmpeg LGPL baixado em .deps/ (ver spikes/video/README.md).
+[env]
+FFMPEG_DIR = { value = ".deps/ffmpeg", relative = true }
+# libclang para o bindgen do ffmpeg-sys (sem precisar instalar o LLVM).
+LIBCLANG_PATH = { value = ".deps/libclang", relative = true }

@@ -64,7 +64,7 @@ Cascata de codec por hardware, detectada em runtime:
 
 ## 4. Decode e render (lado de quem recebe)
 
-- Decode por hardware (**D3D11VA**) → textura na GPU → render pela UI **sem passar pela CPU**. A viabilidade desse último passo no Slint é o spike da Fase 0 (`SPEC-01` §10).
+- Decode por hardware (**D3D11VA**) → processador de vídeo do D3D11 (NV12→RGB + escala) → backbuffer da swapchain da janela-filha de vídeo, **sem passar pela CPU** (D-02, validado em `spikes/video`). A UI do Slint não desenha por cima dessa área.
 - O decoder HEVC do Media Foundation pode depender da extensão "HEVC Video Extensions" da Store. Por isso o decode usa D3D11VA direto (build mínimo do FFmpeg), com o MFT como alternativa quando disponível.
 - **Só decodifica o que está visível.** Transmissão minimizada ou aba trocada → decoder é liberado. Economia direta de CPU/GPU.
 - Cada destinatário recebe só a camada de simulcast que cabe na banda dele.

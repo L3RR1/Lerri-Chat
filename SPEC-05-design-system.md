@@ -11,7 +11,7 @@ A interface segue a **mesma linha espiritual do LerriNFC**: fundo escuro quase-p
 1. **Escuro de verdade.** Fundo quase-preto arroxeado; nada de cinza "dark mode genérico".
 2. **Roxo é o acento, não o preenchimento.** Usado em estados ativos, foco, "quem está falando", botões primários. O resto respira no escuro.
 3. **Densidade calma.** Ferramenta, não rede social. Pouca cor, pouco ruído, zero animação supérflua (coerente com o princípio de desempenho).
-4. **Nativo.** Renderizado por Slint na GPU. A estética não pode custar desempenho.
+4. **Nativo e leve.** UI no renderer **software** do Slint (D-02): sem driver gráfico, ~22 MB ociosa. A estética não pode custar desempenho: nada de sombras pesadas, blur ou gradientes animados. Vídeo fica numa área própria (janela-filha D3D11) e a UI não desenha por cima dela.
 
 ## 2. Paleta
 

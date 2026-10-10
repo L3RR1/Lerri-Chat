@@ -36,14 +36,14 @@ Desenvolvimento guiado por especificação (SDD). Primeiro a spec, depois o cód
 
 ## Estado
 
-**Fase 0 — Fundação, em andamento.** Pronto: workspace, identidade local cifrada e eco QUIC entre cliente e relay. Faltam os spikes que fecham as decisões D-01 a D-03 (ver [`SPEC-06`](SPEC-06-fases.md)).
+**Fase 0 — Fundação, concluída.** Workspace, identidade local cifrada, eco QUIC entre cliente e relay, e os spikes que fecharam as decisões D-01 a D-03 (ver [`SPEC-06`](SPEC-06-fases.md), [`spikes/video`](spikes/video/README.md) e [`spikes/p2p`](spikes/p2p/README.md)). Próxima: Fase 1.
 
 ## Compilar e testar
 
 Requer Rust stable e, no Windows, as Build Tools do Visual Studio (MSVC + Windows SDK).
 
 ```sh
-cargo test --workspace
+cargo test --workspace --exclude spike-video --exclude spike-p2p
 cargo build --release -p lerrichat          # target/release/lerrichat.exe
 cargo build --release -p lerrichat-host     # relay headless (Linux)
 ```

@@ -6,12 +6,12 @@ Desenvolvimento guiado por especificação: cada fase tem escopo fechado, crité
 
 ## Decisões e pendências abertas
 
-| ID | Decisão | Onde se decide |
-|----|---------|----------------|
-| D-01 | NAT traversal: **iroh** com relay próprio × implementação própria sobre `quinn` (`SPEC-03` §4.4) | Spike da Fase 0 |
-| D-02 | UI: **Slint** × `egui` + `wgpu`, conforme o render de vídeo sem cópia (`SPEC-01` §10) | Spike da Fase 0 |
-| D-03 | Decode: FFmpeg mínimo (D3D11VA) × MFT de hardware (`SPEC-01` §1) | Spike da Fase 0 |
-| P-01 | Casar os hex de roxo com o `Color.kt` do LerriNFC (`SPEC-05`) | Antes da Fase 6 |
+| ID | Decisão | Status |
+|----|---------|--------|
+| D-01 | NAT traversal: **iroh** com relay próprio × implementação própria sobre `quinn` (`SPEC-03` §4.4) | **Decidido: iroh**, só com relay próprio ([`spikes/p2p`](spikes/p2p/README.md)). Validar NAT real na Fase 1. |
+| D-02 | UI e render de vídeo sem cópia (`SPEC-01` §10) | **Decidido: Slint com renderer software + vídeo em janela-filha com swapchain D3D11** ([`spikes/video`](spikes/video/README.md)). |
+| D-03 | Decode: FFmpeg mínimo (D3D11VA) × MFT de hardware (`SPEC-01` §1) | **Decidido: FFmpeg LGPL com D3D11VA.** O MF não decodifica HEVC/AV1 sem a extensão da Store. |
+| P-01 | Casar os hex de roxo com o `Color.kt` do LerriNFC (`SPEC-05`) | Pendente, antes da Fase 6 |
 
 ---
 
@@ -21,7 +21,7 @@ Desenvolvimento guiado por especificação: cada fase tem escopo fechado, crité
 Escopo:
 - Workspace Rust com os crates de `SPEC-01` (`core`, `crypto`, `net`, `media`, `host`, `client`, `ui`, `app`, `host-bin`).
 - Geração de identidade local (par de chaves Ed25519) cifrada com DPAPI — `RF-01`.
-- Conexão QUIC cliente↔relay com TLS 1.3 (`quinn`), echo de mensagem de teste.
+- Conexão QUIC cliente↔relay com TLS 1.3 (`quinn`), echo de mensagem de teste. *(Com a D-01, o `net` migra para o iroh na Fase 1.)*
 - CI de build do `lerrichat.exe` (Windows) e do `lerrichat-host` (Linux), medindo o tamanho do binário.
 - **Spike D-02/D-03:** decodificar um stream HEVC 1080p60 com D3D11VA e exibir na UI sem cópia pra CPU.
 - **Spike D-01:** dois peers atrás de NAT conectando via iroh com relay próprio (sem relays da n0).
@@ -32,8 +32,8 @@ Aceite:
 - [x] `lerrichat.exe` e `lerrichat.exe --host` sobem e trocam uma mensagem por QUIC (IPv4 e IPv6; certificado do relay fixado por fingerprint). *`lerrichat-host` no Linux: compila na CI, ainda não rodado num servidor real.*
 - [x] Identidade persiste cifrada (DPAPI) entre reinícios.
 - [x] Binário < 25 MB (RNF-02), partida < 1,5 s (RNF-09). *Medido sem UI: 2,7 MB e ~30 ms. Remedir após D-02.*
-- [ ] Spike de vídeo: 1080p60 decodificado e exibido com CPU < 5% → D-02 e D-03 registradas.
-- [ ] Spike de rede: resultado registrado em D-01.
+- [x] Spike de vídeo: 1080p60 decodificado e exibido com CPU < 5% → D-02 e D-03 registradas. *HEVC 1080p60: 60 fps, 0,14% da máquina, 58 MB de RAM.*
+- [x] Spike de rede: resultado registrado em D-01. *Conecta só pelo relay próprio e migra para direto em ~150 ms; NAT real fica para a Fase 1.*
 
 ---
 

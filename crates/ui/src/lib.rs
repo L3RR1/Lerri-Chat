@@ -66,6 +66,7 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     let (identity, _) = Identity::load_or_create(&data_dir)?;
     let ui = AppWindow::new()?;
     ui.set_my_id(identity.member_id().short().into());
+    ui.set_version(env!("CARGO_PKG_VERSION").into());
     let settings = Settings::load(&data_dir);
     ui.set_nickname(settings.nickname.into());
     ui.set_keep_history(settings.keep_history);
@@ -474,16 +475,9 @@ async fn run_room(
         let role = if is_owner { "você é o dono" } else { "você é membro" };
         let info = format!("Sala {mode} · {role} · mensagens cifradas de ponta a ponta (MLS)");
         let has_invite_host = invite_host.is_some();
-        let (reach_text, reach_warning) = match &reach {
-            Some(r) => {
-                let mut text = r.lines.join("\n");
-                if let Some(note) = &r.note {
-                    text.push_str("\n\n");
-                    text.push_str(note);
-                }
-                (text, r.warning)
-            }
-            None => (String::new(), false),
+        let (reach_text, reach_note, reach_warning) = match &reach {
+            Some(r) => (r.lines.join("\n"), r.note.clone().unwrap_or_default(), r.warning),
+            None => (String::new(), String::new(), false),
         };
         let show_invite = first_invite.is_some();
         let _ = ui.upgrade_in_event_loop(move |ui| {
@@ -491,6 +485,7 @@ async fn run_room(
             ui.set_room_info(info.into());
             ui.set_is_owner(is_owner && has_invite_host);
             ui.set_reach_text(reach_text.into());
+            ui.set_reach_note(reach_note.into());
             ui.set_reach_warning(reach_warning);
             ui.set_invite_link("".into());
             ui.set_copy_status("".into());
@@ -591,16 +586,16 @@ async fn run_room(
         push_view(&w1, &v);
     };
     let route = move |r: Option<lerri_client::Route>| {
-        let (text, direct) = match r {
+        let (text, quality) = match r {
             Some(r) => {
                 let kind = if r.direct { "direto" } else { "pelo ponto de encontro" };
-                (format!("Caminho {kind} · {:.1} ms", r.rtt.as_secs_f64() * 1000.0), r.direct)
+                (format!("Caminho {kind} · {:.0} ms", r.rtt.as_secs_f64() * 1000.0), route_quality(&r))
             }
-            None => (String::new(), false),
+            None => (String::new(), 0),
         };
         let _ = w2.upgrade_in_event_loop(move |ui| {
             ui.set_route_text(text.into());
-            ui.set_route_direct(direct);
+            ui.set_route_quality(quality);
         });
     };
     let exit = room::run(session, core, data_dir.to_path_buf(), invite_host, cmds, emit, route).await;
@@ -608,6 +603,19 @@ async fn run_room(
         host.shutdown().await;
     }
     exit
+}
+
+/// Cor do indicador de rede (SPEC-05 §5): 0 bom, 1 atenção, 2 ruim. Voz
+/// passa de 150 ms boca-a-ouvido com ~300 ms de ida e volta.
+fn route_quality(r: &lerri_client::Route) -> i32 {
+    let ms = r.rtt.as_millis();
+    if ms >= 300 {
+        2
+    } else if ms >= 120 || !r.direct {
+        1
+    } else {
+        0
+    }
 }
 
 fn push_view(ui: &Weak<AppWindow>, v: &View) {

@@ -124,7 +124,7 @@ A meta "convidado leigo entra em < 60 s" (`SPEC-00`) esbarra em barreiras do pr�
 | **Antivírus** desconfiando de app que captura tela e abre porta UDP | Assinatura de código + envio do binário pra análise da Microsoft/fornecedores antes de cada release. |
 | **Firewall do Defender** ao escutar porta (criador no x1, relay no Windows) | A UI explica antes de o prompt aparecer. O cliente que só conecta não dispara prompt. |
 | **Handler `lerrichat://`** | Registrado em `HKCU\Software\Classes` na primeira execução — sem admin, sem instalador. Colar o link no app sempre funciona como alternativa. |
-| **Licenças de terceiros** (Slint royalty-free, FFmpeg LGPL, OpenH264 BSD, libopus e RNNoise BSD, porte do WebRTC APM BSD/MIT) | Tela "Sobre" com atribuições. FFmpeg em DLLs carregadas em tempo de execução (LGPL: o usuário pode trocá-las); falta o build mínimo (hoje ~95 MB do build completo). |
+| **Licenças de terceiros** (Slint royalty-free, FFmpeg LGPL, OpenH264 BSD, libopus e RNNoise BSD, porte do WebRTC APM BSD/MIT) | Tela "Sobre" com atribuições (Fase 6). FFmpeg em DLLs carregadas em tempo de execução (LGPL: o usuário pode trocá-las); falta o build mínimo (hoje ~95 MB do build completo). |
 
 ## 10. Riscos de arquitetura
 
@@ -136,4 +136,4 @@ A meta "convidado leigo entra em < 60 s" (`SPEC-00`) esbarra em barreiras do pr�
 | NAT/CGNAT impede conexão direta | IPv6 + PCP/UPnP + x1 assistido por relay + modo servidor (`SPEC-03` §4). |
 | Dependência do iroh (projeto de terceiros, fork próprio do quinn) | Versão fixada; configuração sem serviços da n0 coberta por teste; o crate `net` isola a API do iroh do resto do app. |
 | MLS tem curva de aprendizado | Fase 2 entrega MLS completo; um atalho simétrico só é aceitável como marco interno (`SPEC-06` Fase 2). |
-| `.exe` > 25 MB com FFmpeg + WebRTC APM + Slint | Builds mínimos, LTO, `opt-level = "z"` nas crates frias; medir na CI desde a Fase 0. A voz (Fase 3) levou o `.exe` a 24,85 MiB. Na Fase 4 as dependências passaram a `opt-level = "s"`, menos o código quente (áudio, QUIC, AES, renderer), e o FFmpeg ficou fora do `.exe`: **23,0 MiB com voz, tela e câmera**. |
+| `.exe` > 25 MB com FFmpeg + WebRTC APM + Slint | Builds mínimos, LTO, `opt-level = "z"` nas crates frias; medir na CI desde a Fase 0. A voz (Fase 3) levou o `.exe` a 24,85 MiB. Na Fase 4 as dependências passaram a `opt-level = "s"`, menos o código quente (áudio, QUIC, AES, renderer), e o FFmpeg ficou fora do `.exe`: **23,0 MiB com voz, tela e câmera**. Na Fase 6, trocar os widgets padrão do Slint por componentes próprios baixou para **22,8 MiB**. |

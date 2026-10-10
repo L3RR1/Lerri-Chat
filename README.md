@@ -37,11 +37,12 @@ Desenvolvimento guiado por especificação (SDD). Primeiro a spec, depois o cód
 ## Estado
 
 - **Fase 0 — Fundação, concluída.** Workspace, identidade local cifrada e os spikes que fecharam as decisões D-01 a D-03 (ver [`SPEC-06`](SPEC-06-fases.md), [`spikes/video`](spikes/video/README.md) e [`spikes/p2p`](spikes/p2p/README.md)).
-- **Fase 1 — Salas, convites e conectividade: implementada, falta o teste com redes reais.** Salas nos dois modos, convites de uso único com QR, links `lerrichat://`, x1 direto e x1 assistido pelo ponto de encontro do seu relay. Já tem uma interface mínima (início e sala); a interface completa é a Fase 6.
+- **Fase 1 — Salas, convites e conectividade: implementada, falta o teste com redes reais.** Salas nos dois modos, convites de uso único com QR, links `lerrichat://`, x1 direto e x1 assistido pelo ponto de encontro do seu relay. A interface ganhou a forma final na Fase 6.
 - **Fase 2 — Chat de texto E2EE: implementada.** Grupo MLS por sala, admissão com o segredo do convite, chat cifrado, remover membro e sair, apelido e histórico local opcionais.
 - **Fase 3 — Voz: implementada, falta o teste de ouvido entre dois PCs.** Canal de voz cifrado de ponta a ponta (SFrame com chaves do MLS), cancelamento de eco, supressão de ruído e ganho automático, só transmite quando você fala, indicador de quem está falando. O relay repassa a voz sem conseguir ouvir.
 - **Fase 4 — Compartilhar a tela: implementada (sem simulcast), falta o teste entre dois PCs.** Captura e codificação na GPU (HEVC/H.264/AV1 conforme a placa), codec negociado pelo que todos decodificam, decode na GPU e exibição sem passar pela CPU. Cada quadro vai cifrado num stream QUIC, e o relay repassa só para quem assiste, sem conseguir ver.
 - **Fase 5 — Câmera: implementada (sem simulcast), falta o teste entre dois PCs.** Câmera em 720p pelo mesmo caminho da tela (captura e codificação na GPU, cifrada de ponta a ponta), ao mesmo tempo que a tela. Dá para assistir a uma tela e uma câmera juntas.
+- **Fase 6 — Interface e polimento: em andamento.** Paleta do LerriNFC com contraste AA conferido por teste, barra de controle embaixo (voz · tela · câmera), indicador de rede com a latência colorida pela qualidade, confirmação explicada para remover e sair, aviso do firewall antes de criar sala e tela "Sobre" com as licenças. Faltam a assinatura de código e o teste com um convidado leigo num Windows limpo.
 
 ## Compilar e testar
 
@@ -55,7 +56,7 @@ cargo build --release -p lerrichat-host     # relay headless (Linux)
 
 ## Usar
 
-Abra o `lerrichat.exe`: a janela tem **Entrar numa sala** (cole o convite), **Criar sala x1**, **Minhas salas** e **Criar sala num servidor**. Na sala aparecem o chat (cifrado de ponta a ponta), o cartão de voz (entrar, mudo, ensurdecer, supressão forte de ruído), o cartão de tela (compartilhar o monitor escolhido; quem compartilha ganha um botão "Assistir" na lista de membros e a imagem aparece acima do chat), o cartão de câmera (ligar a câmera escolhida; quem liga ganha um botão "Câmera" e a imagem aparece ao lado da tela), os membros (o dono pode remover; um anel roxo marca quem está falando), o convite (link + QR, botão de copiar), o caminho da conexão com a latência e a atividade. Na primeira vez que abre, ele registra os links `lerrichat://` para o seu usuário do Windows, então clicar num convite já abre a sala.
+Abra o `lerrichat.exe`: a janela tem **Entrar numa sala** (cole o convite), **Criar sala x1**, **Minhas salas** e **Criar sala num servidor**. Na sala aparecem o chat (cifrado de ponta a ponta), os membros (o dono pode remover; um anel roxo marca quem está falando), o convite (link + QR, botão de copiar), o caminho da conexão com a latência e a atividade. A barra de baixo controla a voz (entrar, mudo, ensurdecer, supressão forte de ruído), a tela (compartilhar o monitor escolhido; quem compartilha ganha um botão "Assistir" na lista de membros e a imagem aparece acima do chat) e a câmera (quem liga ganha um botão "Câmera" e a imagem aparece ao lado da tela). O botão **Sobre**, na tela inicial, mostra as licenças de terceiros. Na primeira vez que abre, ele registra os links `lerrichat://` para o seu usuário do Windows, então clicar num convite já abre a sala.
 
 Pela linha de comando (relay, testes):
 

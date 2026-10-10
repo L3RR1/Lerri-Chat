@@ -12,7 +12,7 @@ Desenvolvimento guiado por especificação: cada fase tem escopo fechado, crité
 | D-02 | UI e render de vídeo sem cópia (`SPEC-01` §10) | **Decidido: Slint com renderer software + vídeo em janela-filha com swapchain D3D11** ([`spikes/video`](spikes/video/README.md)). |
 | D-03 | Decode: FFmpeg mínimo (D3D11VA) × MFT de hardware (`SPEC-01` §1) | **Decidido: FFmpeg LGPL com D3D11VA.** O MF não decodifica HEVC/AV1 sem a extensão da Store. |
 | D-04 | Transporte da tela: datagramas (como a voz) × um stream QUIC por quadro | **Decidido na Fase 4: stream por quadro** (`SPEC-03` §6.3). Keyframes têm centenas de pacotes; em datagramas, 1% de perda já os estragaria. O relay compensa o atraso pulando quadros até o próximo keyframe. |
-| P-01 | Casar os hex de roxo com o `Color.kt` do LerriNFC (`SPEC-05`) | Pendente, antes da Fase 6 |
+| P-01 | Casar os hex de roxo com o `Color.kt` do LerriNFC (`SPEC-05`) | **Resolvida na Fase 6:** todos os tokens vêm do `Color.kt`; contraste AA conferido por teste (`crates/ui/tests/contrast.rs`). |
 
 ---
 
@@ -32,7 +32,7 @@ Fora de escopo: UI real, convites, chat.
 Aceite:
 - [x] `lerrichat.exe` e `lerrichat.exe --host` sobem e trocam uma mensagem por QUIC (IPv4 e IPv6; certificado do relay fixado por fingerprint). *`lerrichat-host` no Linux: compila na CI, ainda não rodado num servidor real.*
 - [x] Identidade persiste cifrada (DPAPI) entre reinícios.
-- [x] Binário < 25 MB (RNF-02), partida < 1,5 s (RNF-09). *Medido sem UI: 2,7 MB e ~30 ms. Remedir após D-02.*
+- [x] Binário < 25 MB (RNF-02), partida < 1,5 s (RNF-09). *Medido sem UI: 2,7 MB e ~30 ms. Remedido na Fase 6, com UI, voz, tela e câmera: 22,8 MiB e janela criada em 42–91 ms.*
 - [x] Spike de vídeo: 1080p60 decodificado e exibido com CPU < 5% → D-02 e D-03 registradas. *HEVC 1080p60: 60 fps, 0,14% da máquina, 58 MB de RAM.*
 - [x] Spike de rede: resultado registrado em D-01. *Conecta só pelo relay próprio e migra para direto em ~150 ms; NAT real fica para a Fase 1.*
 
@@ -105,7 +105,7 @@ Aceite:
 - [x] SFU repassa voz sem decifrar. *O relay lê só o cabeçalho de roteamento e não tem chave. Testado: quem não está na voz não recebe, e a troca de epoch na remoção não interrompe quem fica.*
 - [ ] Sem eco perceptível com caixa de som (sem fone). *AEC3 ligado; num eco sintético cai mais de 15 dB. Falta ouvir entre dois PCs com caixa de som.*
 
-Limitações conhecidas: sem push-to-talk e sem escolha de dispositivo (usa o padrão do Windows); o binário chegou a 24,85 MiB, perto do limite de 25 (`SPEC-01` §10).
+Limitações conhecidas: sem push-to-talk e sem escolha de dispositivo (usa o padrão do Windows); o binário chegou a 24,85 MiB, perto do limite de 25 (`SPEC-01` §10); na Fase 6 está em 22,8 MiB.
 
 ---
 
@@ -161,10 +161,21 @@ Escopo:
 - Telas de remover membro e sair (a lógica já existe desde a Fase 2).
 - Fricção do Windows: assinatura de código, explicação do firewall, tela "Sobre" com licenças — `SPEC-01` §9.
 
+Estado: **implementada, menos a assinatura de código; falta o teste com um convidado leigo.** O que entrou:
+- **Paleta do LerriNFC** (P-01) em todas as telas, com campo de texto, caixa de seleção e lista de escolha próprios: os do `std-widgets` usam o azul do Fluent e o Slint 1.18 não deixa trocar as cores do `Palette`.
+- **Sala no layout do `SPEC-05` §4:** barra de controle embaixo (voz · tela · câmera) com linha de estado em texto, membros, detalhes da mídia e atividade à direita. Uma sala por vez, então a lista de salas fica na tela inicial em vez de numa barra lateral.
+- **Indicador de rede** com caminho e latência; a cor segue a qualidade (bom < 120 ms e direto, atenção ≥ 120 ms ou pelo ponto de encontro, ruim ≥ 300 ms).
+- **Remover e sair** com confirmação que explica a consequência (rekey e queda; sair apaga a sala do PC), e "Cancelar".
+- **Firewall:** aviso no cartão "Criar sala x1", antes de o Windows perguntar.
+- **Tela "Sobre"** com versão, o que o app faz na rede e as licenças de terceiros (inclui a atribuição do Slint exigida pela licença royalty-free).
+- Botões, caixa de seleção e lista de escolha acessíveis por leitor de tela (papel, estado e ação padrão via UI Automation).
+
 Aceite:
-- [ ] RAM ociosa < 80 MB (RNF-01).
-- [ ] Convidado leigo entra em < 60 s a partir do download, num Windows limpo.
-- [ ] Telas só com tokens da paleta; todos os pares texto/fundo passam AA.
+- [x] RAM ociosa < 80 MB (RNF-01). *Release, processo real: 22 MB na tela inicial e 37 MB numa sala x1 parada hospedando a sala (working set).*
+- [ ] Convidado leigo entra em < 60 s a partir do download, num Windows limpo. *Falta testar com uma pessoa. Sem assinatura de código, o SmartScreen ainda vai pedir "Mais informações → Executar assim mesmo".*
+- [x] Telas só com tokens da paleta; todos os pares texto/fundo passam AA. *`crates/ui/tests/contrast.rs` lê o `global Theme` e confere cada par usado. Exceções: o QR (preto no branco) e a barra de rolagem padrão.*
+
+Fora desta entrega: assinatura de código (precisa de certificado; `SPEC-01` §9), ícone do app, anel de "falando" pulsante (é estático), indicador de latência por membro (só o caminho até o host) e push-to-talk.
 
 ---
 

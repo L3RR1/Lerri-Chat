@@ -12,10 +12,11 @@ lerri-core = { version = "0.0.1", path = "../crates/core" }
 lerri-crypto = { version = "0.0.1", path = "../crates/crypto" }
 lerri-host = { version = "0.0.1", path = "../crates/host" }
 lerri-net = { version = "0.0.1", path = "../crates/net" }
+lerri-ui = { version = "0.0.1", path = "../crates/ui" }
 qrcode = { version = "0.14.1", default-features = false }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "env-filter", "std"] }
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_Console"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }

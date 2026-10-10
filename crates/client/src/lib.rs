@@ -174,3 +174,54 @@ impl Session {
 pub fn refusal(err: &anyhow::Error) -> Option<Refusal> {
     err.downcast_ref::<Refusal>().copied()
 }
+
+/// Endereços do convite de uma sala x1 explicados para o usuário, com o aviso
+/// de alcance da SPEC-03 §4.2.
+pub struct ReachReport {
+    /// Uma linha por endereço: "endereço  tipo".
+    pub lines: Vec<String>,
+    pub note: Option<String>,
+    /// O aviso é sério (ninguém de fora deve conseguir entrar).
+    pub warning: bool,
+}
+
+pub fn reach_report(cands: &[lerri_net::reach::Candidate], assisted: bool) -> ReachReport {
+    use lerri_net::reach::{Kind, reachable_from_internet};
+    let lines = cands
+        .iter()
+        .map(|c| {
+            let kind = match &c.kind {
+                Kind::Internet if c.addr.is_ipv6() => "internet (IPv6)".to_string(),
+                Kind::Internet => "internet (IPv4)".to_string(),
+                Kind::Lan => "rede local".to_string(),
+                Kind::Vpn(name) => format!("VPN ({name})"),
+                Kind::Cgnat => "CGNAT".to_string(),
+            };
+            format!("{:<44} {kind}", c.addr.to_string())
+        })
+        .collect();
+    let (note, warning) = if assisted {
+        (
+            Some("Com ponto de encontro: quem não alcançar um desses entra pelo relay, e o caminho direto é tentado depois.".into()),
+            false,
+        )
+    } else if !reachable_from_internet(cands) {
+        (
+            Some(
+                "Seu PC não parece alcançável pela internet (sem IPv6 público e sem porta mapeada no roteador; talvez \
+                 CGNAT). Só entra quem estiver na mesma rede local ou VPN. Para os outros, use o link público de um \
+                 relay seu como ponto de encontro, ou abra uma porta UDP no roteador."
+                    .into(),
+            ),
+            true,
+        )
+    } else if !cands.iter().any(|c| c.kind == Kind::Internet && c.addr.is_ipv4()) {
+        (
+            Some("Só há IPv6 público: quem não tem IPv6 não alcança este PC. O roteador também pode bloquear entrada em IPv6.".into()),
+            false,
+        )
+    } else {
+        (None, false)
+    };
+    ReachReport { lines, note, warning }
+}

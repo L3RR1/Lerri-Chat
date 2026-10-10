@@ -37,7 +37,7 @@ Desenvolvimento guiado por especificação (SDD). Primeiro a spec, depois o cód
 ## Estado
 
 - **Fase 0 — Fundação, concluída.** Workspace, identidade local cifrada e os spikes que fecharam as decisões D-01 a D-03 (ver [`SPEC-06`](SPEC-06-fases.md), [`spikes/video`](spikes/video/README.md) e [`spikes/p2p`](spikes/p2p/README.md)).
-- **Fase 1 — Salas, convites e conectividade: implementada, falta o teste com redes reais.** Salas nos dois modos, convites de uso único com QR, links `lerrichat://`, x1 direto e x1 assistido pelo ponto de encontro do seu relay. Ainda sem interface gráfica.
+- **Fase 1 — Salas, convites e conectividade: implementada, falta o teste com redes reais.** Salas nos dois modos, convites de uso único com QR, links `lerrichat://`, x1 direto e x1 assistido pelo ponto de encontro do seu relay. Já tem uma interface mínima (início e sala); a interface completa é a Fase 6.
 
 ## Compilar e testar
 
@@ -49,13 +49,17 @@ cargo build --release -p lerrichat          # target/release/lerrichat.exe
 cargo build --release -p lerrichat-host     # relay headless (Linux)
 ```
 
-## Usar (linha de comando, por enquanto)
+## Usar
+
+Abra o `lerrichat.exe`: a janela tem **Entrar numa sala** (cole o convite), **Criar sala x1**, **Minhas salas** e **Criar sala num servidor**. Na sala aparecem o convite (link + QR, botão de copiar), quem está online, o caminho da conexão com a latência e a atividade. Na primeira vez que abre, ele registra os links `lerrichat://` para o seu usuário do Windows, então clicar num convite já abre a sala.
+
+Pela linha de comando (relay, testes):
 
 Sala x1, sem servidor (dois PCs):
 
 ```sh
-lerrichat --x1                  # PC de quem cria: mostra endereços, aviso de alcance e o convite (texto + QR)
-lerrichat "lerrichat://join?…"  # PC do convidado
+lerrichat --x1                       # PC de quem cria: endereços, aviso de alcance e convite no terminal
+lerrichat --cli --join "lerrichat://join?…"  # PC do convidado (sem --cli, abre a janela)
 ```
 
 Sala num servidor (Proxmox/VPS):

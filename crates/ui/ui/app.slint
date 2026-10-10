@@ -1,0 +1,454 @@
+// Interface mínima da Fase 1 (SPEC-05): início, espera e sala.
+// Só tokens da paleta; nenhuma animação.
+
+import { LineEdit, ScrollView, Palette } from "std-widgets.slint";
+
+global Theme {
+    out property <color> ink: #0B0710;
+    out property <color> surface: #140D1F;
+    out property <color> surface-raised: #1D1430;
+    out property <color> surface-hover: #271A42;
+    out property <color> border: #2E2142;
+    out property <color> violet: #A855F7;
+    out property <color> violet-bright: #C084FC;
+    out property <color> violet-deep: #7C3AED;
+    out property <color> text: #F4F0FA;
+    out property <color> text-dim: #B3A7C9;
+    out property <color> text-mute: #6E6384;
+    out property <color> success: #34D399;
+    out property <color> warning: #FBBF24;
+    out property <color> danger: #F87171;
+}
+
+export struct SavedRoomRow {
+    id: string,
+    label: string,
+}
+
+component Btn inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> danger;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 36px;
+    min-width: label.preferred-width + 32px;
+    border-radius: 6px;
+    border-width: primary ? 0px : 1px;
+    border-color: danger ? Theme.danger : Theme.border;
+    background: !enabled ? Theme.surface-raised
+        : primary ? (ta.pressed ? Theme.violet-deep : ta.has-hover ? Theme.violet-bright : Theme.violet)
+        : (ta.has-hover ? Theme.surface-hover : transparent);
+    accessible-role: button;
+    accessible-label: text;
+    ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    label := Text {
+        width: 100%;
+        height: 100%;
+        text: root.text;
+        color: !root.enabled ? Theme.text-mute : root.primary ? Theme.ink : root.danger ? Theme.danger : Theme.text;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component Card inherits Rectangle {
+    background: Theme.surface;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.border;
+}
+
+component Title inherits Text {
+    color: Theme.text;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+component Dim inherits Text {
+    color: Theme.text-dim;
+    wrap: word-wrap;
+}
+
+component HomeView inherits VerticalLayout {
+    in property <string> my-id;
+    in property <[SavedRoomRow]> saved-rooms;
+    in-out property <string> join-link;
+    in-out property <string> via-link;
+    in-out property <string> admin-link;
+    callback join();
+    callback create-x1();
+    callback create-server();
+    callback open-room(int);
+
+    padding: 24px;
+    spacing: 16px;
+
+    HorizontalLayout {
+        Text { text: "Lerri Chat"; color: Theme.text; font-size: 28px; font-weight: 600; }
+        Rectangle { }
+        VerticalLayout {
+            alignment: center;
+            Text { text: "você: " + root.my-id + "…"; color: Theme.text-dim; font-family: "Cascadia Mono"; }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 16px;
+        Card {
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                alignment: start;
+                Title { text: "Entrar numa sala"; }
+                Dim { text: "Cole o convite que recebeu (lerrichat://join…)."; }
+                LineEdit {
+                    text <=> root.join-link;
+                    placeholder-text: "lerrichat://join?…";
+                    accepted => { root.join(); }
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    Btn { text: "Entrar"; primary: true; enabled: root.join-link != ""; clicked => { root.join(); } }
+                }
+            }
+        }
+        Card {
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                alignment: start;
+                Title { text: "Criar sala x1"; }
+                Dim { text: "Sala direta entre dois PCs, hospedada neste aqui. Acaba quando você fechar o app."; }
+                LineEdit {
+                    text <=> root.via-link;
+                    placeholder-text: "opcional: link público do seu relay (lerrichat://relay…)";
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    Btn { text: "Criar sala x1"; primary: true; clicked => { root.create-x1(); } }
+                }
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 16px;
+        Card {
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                alignment: start;
+                Title { text: "Minhas salas"; }
+                if root.saved-rooms.length == 0: Dim { text: "Nenhuma sala salva. Salas de servidor aparecem aqui depois que você entra nelas."; }
+                for room[i] in root.saved-rooms: HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: room.id; color: Theme.text; font-family: "Cascadia Mono"; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: room.label; color: Theme.text-dim; }
+                    }
+                    Rectangle { }
+                    Btn { text: "Abrir"; clicked => { root.open-room(i); } }
+                }
+            }
+        }
+        Card {
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                alignment: start;
+                Title { text: "Criar sala num servidor"; }
+                Dim { text: "Para quem roda um relay (lerrichat-host). Use o link de administração que ele mostra."; }
+                LineEdit {
+                    text <=> root.admin-link;
+                    placeholder-text: "lerrichat://admin?…";
+                    input-type: password;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    Btn { text: "Criar no servidor"; enabled: root.admin-link != ""; clicked => { root.create-server(); } }
+                }
+            }
+        }
+    }
+    Rectangle { }
+}
+
+component RoomView inherits HorizontalLayout {
+    in property <string> room-id;
+    in property <string> room-info;
+    in property <string> route-text;
+    in property <bool> route-direct;
+    in property <string> reach-text;
+    in property <bool> reach-warning;
+    in property <bool> is-owner;
+    in property <string> invite-link;
+    in property <image> invite-qr;
+    in property <string> copy-status;
+    in property <[string]> online;
+    in property <[string]> log;
+    callback new-invite();
+    callback copy-invite();
+    callback leave();
+
+    padding: 24px;
+    spacing: 16px;
+
+    VerticalLayout {
+        spacing: 16px;
+        HorizontalLayout {
+            spacing: 12px;
+            VerticalLayout {
+                Title { text: "Sala " + root.room-id; font-family: "Cascadia Mono"; }
+                Dim { text: root.room-info; }
+            }
+            Rectangle { }
+            VerticalLayout {
+                alignment: center;
+                Btn { text: "Sair da sala"; danger: true; clicked => { root.leave(); } }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                width: 10px;
+                height: 10px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 5px;
+                background: root.route-text == "" ? Theme.text-mute : root.route-direct ? Theme.success : Theme.warning;
+            }
+            Text {
+                text: root.route-text == "" ? "sem conexão" : root.route-text;
+                color: Theme.text-dim;
+                vertical-alignment: center;
+            }
+        }
+
+        if root.reach-text != "": Card {
+            border-color: root.reach-warning ? Theme.warning : Theme.border;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                Text { text: "Endereços no convite"; color: Theme.text; font-weight: 600; }
+                Text { text: root.reach-text; color: root.reach-warning ? Theme.warning : Theme.text-dim; wrap: word-wrap; font-family: "Cascadia Mono"; }
+            }
+        }
+
+        if root.is-owner: Card {
+            HorizontalLayout {
+                padding: 16px;
+                spacing: 16px;
+                if root.invite-link == "": Rectangle {
+                    width: 196px;
+                    height: 196px;
+                    background: Theme.surface-raised;
+                    border-radius: 4px;
+                    Text {
+                        width: parent.width - 24px;
+                        x: 12px;
+                        height: parent.height;
+                        text: "Clique em \"Novo convite\" para gerar um link e o QR.";
+                        color: Theme.text-dim;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                if root.invite-link != "": Rectangle {
+                    width: 196px;
+                    height: 196px;
+                    background: white;
+                    border-radius: 4px;
+                    Image {
+                        width: 188px;
+                        height: 188px;
+                        source: root.invite-qr;
+                        image-rendering: pixelated;
+                    }
+                }
+                VerticalLayout {
+                    spacing: 10px;
+                    Text { text: "Convite"; color: Theme.text; font-weight: 600; }
+                    Dim { text: "Uso único, válido por 24 h. Envie por um canal confiável."; }
+                    Rectangle {
+                        background: Theme.surface-raised;
+                        border-radius: 6px;
+                        min-height: 64px;
+                        Text {
+                            x: 10px;
+                            y: 8px;
+                            width: parent.width - 20px;
+                            height: parent.height - 16px;
+                            text: root.invite-link;
+                            color: Theme.text-dim;
+                            font-family: "Cascadia Mono";
+                            font-size: 12px;
+                            wrap: char-wrap;
+                            overflow: elide;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        Btn { text: "Copiar link"; primary: true; enabled: root.invite-link != ""; clicked => { root.copy-invite(); } }
+                        Btn { text: "Novo convite"; clicked => { root.new-invite(); } }
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: root.copy-status; color: Theme.success; }
+                        }
+                    }
+                }
+            }
+        }
+
+        Card {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 6px;
+                Text { text: "Atividade"; color: Theme.text; font-weight: 600; }
+                ScrollView {
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 4px;
+                        for line in root.log: Text { text: line; color: Theme.text-dim; wrap: word-wrap; }
+                    }
+                }
+            }
+        }
+    }
+
+    Card {
+        width: 240px;
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+            alignment: start;
+            Text { text: "Online (" + root.online.length + ")"; color: Theme.text; font-weight: 600; }
+            for m in root.online: HorizontalLayout {
+                spacing: 8px;
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 4px;
+                    background: Theme.success;
+                }
+                Text { text: m; color: Theme.text-dim; font-family: "Cascadia Mono"; }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Lerri Chat";
+    preferred-width: 1000px;
+    preferred-height: 680px;
+    min-width: 760px;
+    min-height: 520px;
+    background: Theme.ink;
+    default-font-family: "Segoe UI";
+    default-font-size: 14px;
+
+    // "home", "busy" ou "room".
+    in property <string> screen: "home";
+    in property <string> busy-text;
+    in-out property <string> error-text;
+
+    in property <string> my-id;
+    in property <[SavedRoomRow]> saved-rooms;
+    in-out property <string> join-link;
+    in-out property <string> via-link;
+    in-out property <string> admin-link;
+
+    in property <string> room-id;
+    in property <string> room-info;
+    in property <string> route-text;
+    in property <bool> route-direct;
+    in property <string> reach-text;
+    in property <bool> reach-warning;
+    in property <bool> is-owner;
+    in property <string> invite-link;
+    in property <image> invite-qr;
+    in property <string> copy-status;
+    in property <[string]> online;
+    in property <[string]> log;
+
+    callback join();
+    callback create-x1();
+    callback create-server();
+    callback open-room(int);
+    callback new-invite();
+    callback copy-invite();
+    callback leave();
+
+    init => {
+        Palette.color-scheme = ColorScheme.dark;
+    }
+
+    VerticalLayout {
+        if root.error-text != "": Rectangle {
+            background: Theme.surface-raised;
+            border-width: 1px;
+            border-color: Theme.danger;
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 12px;
+                Text { text: root.error-text; color: Theme.danger; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                Btn { horizontal-stretch: 0; text: "Fechar"; clicked => { root.error-text = ""; } }
+            }
+        }
+
+        if root.screen == "home": HomeView {
+            my-id: root.my-id;
+            saved-rooms: root.saved-rooms;
+            join-link <=> root.join-link;
+            via-link <=> root.via-link;
+            admin-link <=> root.admin-link;
+            join => { root.join(); }
+            create-x1 => { root.create-x1(); }
+            create-server => { root.create-server(); }
+            open-room(i) => { root.open-room(i); }
+        }
+
+        if root.screen == "busy": VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.busy-text;
+                color: Theme.text-dim;
+                font-size: 16px;
+                horizontal-alignment: center;
+            }
+        }
+
+        if root.screen == "room": RoomView {
+            room-id: root.room-id;
+            room-info: root.room-info;
+            route-text: root.route-text;
+            route-direct: root.route-direct;
+            reach-text: root.reach-text;
+            reach-warning: root.reach-warning;
+            is-owner: root.is-owner;
+            invite-link: root.invite-link;
+            invite-qr: root.invite-qr;
+            copy-status: root.copy-status;
+            online: root.online;
+            log: root.log;
+            new-invite => { root.new-invite(); }
+            copy-invite => { root.copy-invite(); }
+            leave => { root.leave(); }
+        }
+    }
+}

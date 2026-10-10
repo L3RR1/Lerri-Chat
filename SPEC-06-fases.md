@@ -47,7 +47,7 @@ Escopo:
 - Conectividade x1 sem infra: IPv6 + PCP/NAT-PMP/UPnP + aviso de criador inalcançável (`SPEC-03` §4.2).
 - Conectividade x1 assistida: descoberta de endereço (QAD) no relay, sinalização, hole punching e relay de último caso (`SPEC-03` §4.3).
 
-Estado: **implementado; falta o teste com redes reais.** Sem UI ainda: tudo pela linha de comando (`lerrichat --x1`, `--create`, `--join`, `--open`, `--register`). Detalhes em `SPEC-02` §3.4 e `SPEC-03` §4.5.
+Estado: **implementado; falta o teste com redes reais.** Interface mínima adiantada da Fase 6 (início e sala, crate `ui`); a linha de comando continua (`--x1`, `--create`, `--cli --join`, `--open`, `--register`). Detalhes em `SPEC-02` §3.4 e `SPEC-03` §4.5.
 
 Aceite:
 - [x] Criar sala nos dois modos. *Testes automatizados e binário real.*

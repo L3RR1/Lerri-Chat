@@ -1,7 +1,7 @@
 //! `lerrichat.exe` — cliente e relay no mesmo binário (SPEC-01 §2).
 //!
-//! Fase 1: sem UI (ela chega na Fase 6). Pela linha de comando dá para subir
-//! um relay, criar salas nos dois modos, gerar convites e entrar por eles.
+//! Sem argumentos (ou abrindo um link `lerrichat://`) abre a janela. Os
+//! comandos de terminal continuam para relay, testes e automação.
 
 mod protocol_handler;
 
@@ -15,17 +15,18 @@ use lerri_core::protocol::{Auth, Role, RoomMode};
 use lerri_core::unix_now;
 use lerri_crypto::Identity;
 use lerri_host::{RelayConfig, X1Host};
-use lerri_net::reach::{self, Kind};
+use lerri_net::reach;
 
 const SCHEME: &str = lerri_core::invite::SCHEME;
 
 const USAGE: &str = "\
-Lerri Chat (Fase 1, sem interface gráfica)
+Lerri Chat (Fase 1)
 
 Uso:
-  lerrichat                          mostra sua identidade
-  lerrichat LINK                     entra numa sala pelo convite (o mesmo que --join)
-  lerrichat --join LINK              entra numa sala pelo convite
+  lerrichat                          abre a janela
+  lerrichat LINK                     abre a janela e entra pelo convite (o mesmo que --join)
+  lerrichat --cli --join LINK        entra pelo convite no terminal
+  lerrichat --id                     mostra sua identidade
   lerrichat --x1 [--via LINK] [--port N]
                                      cria uma sala x1 neste PC. --via usa o link
                                      público de um relay seu como ponto de encontro
@@ -44,6 +45,7 @@ Opções comuns:
   --version, --help";
 
 enum Command {
+    Gui(Option<String>),
     Identity,
     Host,
     Join(String),
@@ -57,6 +59,7 @@ enum Command {
 
 struct Args {
     command: Command,
+    cli: bool,
     port: Option<u16>,
     public: Vec<String>,
     meet: bool,
@@ -64,11 +67,11 @@ struct Args {
 }
 
 fn parse_args() -> anyhow::Result<Option<Args>> {
-    let mut args = Args { command: Command::Identity, port: None, public: Vec::new(), meet: true, data_dir: None };
+    let mut args = Args { command: Command::Gui(None), cli: false, port: None, public: Vec::new(), meet: true, data_dir: None };
     let mut via = None;
     let mut it = std::env::args().skip(1);
     let set = |cmd: Command, current: &mut Command| {
-        if !matches!(current, Command::Identity) {
+        if !matches!(current, Command::Gui(None)) {
             bail!("escolha um comando só\n\n{USAGE}");
         }
         *current = cmd;
@@ -85,6 +88,8 @@ fn parse_args() -> anyhow::Result<Option<Args>> {
                 println!("lerrichat {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
             }
+            "--id" => set(Command::Identity, &mut args.command)?,
+            "--cli" => args.cli = true,
             "--host" => set(Command::Host, &mut args.command)?,
             "--join" => set(Command::Join(value()?), &mut args.command)?,
             "--x1" => set(Command::X1 { via: None }, &mut args.command)?,
@@ -107,6 +112,12 @@ fn parse_args() -> anyhow::Result<Option<Args>> {
         (_, Some(_)) => bail!("--via só vale com --x1"),
         _ => {}
     }
+    // Convite abre a janela, a menos que peça o terminal.
+    if let Command::Join(link) = &args.command
+        && !args.cli
+    {
+        args.command = Command::Gui(Some(link.clone()));
+    }
     Ok(Some(args))
 }
 
@@ -124,6 +135,9 @@ fn main() -> std::process::ExitCode {
             Some(d) => d,
             None => lerri_core::paths::default_data_dir().context("pasta de dados não encontrada")?,
         };
+        if let Command::Gui(link) = args.command {
+            return gui(data_dir, link);
+        }
         tokio::runtime::Runtime::new()?.block_on(run(args, data_dir))
     })();
 
@@ -157,6 +171,7 @@ async fn run(args: Args, data_dir: PathBuf) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Rooms => list_rooms(&data_dir),
+        Command::Gui(_) => unreachable!("a janela não roda dentro do runtime"),
         Command::Identity => {
             load_identity(&data_dir)?;
             match protocol_handler::registered_command(SCHEME) {
@@ -254,27 +269,13 @@ async fn x1(data_dir: &Path, via: Option<&str>, port: u16) -> anyhow::Result<()>
 }
 
 fn print_reachability(cands: &[reach::Candidate], assisted: bool) {
+    let report = lerri_client::reach_report(cands, assisted);
     println!("Endereços no convite:");
-    for c in cands {
-        let kind = match &c.kind {
-            Kind::Internet if c.addr.is_ipv6() => "internet (IPv6)".to_string(),
-            Kind::Internet => "internet (IPv4)".to_string(),
-            Kind::Lan => "rede local".to_string(),
-            Kind::Vpn(name) => format!("VPN ({name})"),
-            Kind::Cgnat => "CGNAT".to_string(),
-        };
-        println!("  {:<48} {kind}", c.addr.to_string());
+    for line in &report.lines {
+        println!("  {line}");
     }
-    if assisted {
-        println!("Com ponto de encontro: quem não alcançar um desses entra pelo relay e o caminho direto é tentado depois.");
-    } else if !reach::reachable_from_internet(cands) {
-        println!(
-            "\nAVISO: seu PC não parece alcançável pela internet (sem IPv6 público e sem porta mapeada no roteador; \
-             talvez CGNAT).\nSó entra quem estiver na mesma rede local ou VPN. Para os outros, use --via com o link \
-             público de um relay seu, ou abra uma porta UDP no roteador e rode com --port."
-        );
-    } else if !cands.iter().any(|c| c.kind == Kind::Internet && c.addr.is_ipv4()) {
-        println!("Só há IPv6 público: quem não tem IPv6 não alcança este PC. O roteador também pode bloquear entrada em IPv6.");
+    if let Some(note) = report.note {
+        println!("{}{note}", if report.warning { "\nAVISO: " } else { "" });
     }
 }
 
@@ -396,6 +397,74 @@ fn firewall_notice() {
              sem isso ninguém de fora consegue entrar."
         );
     }
+}
+
+fn gui(data_dir: PathBuf, link: Option<String>) -> anyhow::Result<()> {
+    hide_own_console();
+    // Sem console, um panic sumiria sem rastro: grava em crash.log.
+    let crash_log = data_dir.join("crash.log");
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let line = format!("[{}] {info}\n{bt}\n", lerri_core::unix_now());
+        let _ = std::fs::OpenOptions::new().create(true).append(true).open(&crash_log).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(line.as_bytes())
+        });
+        default_hook(info);
+    }));
+    // Na primeira vez, faz os links lerrichat:// abrirem o app (RF-04). Não
+    // mexe se já apontam para outro executável.
+    if protocol_handler::registered_command(SCHEME).is_none()
+        && let Ok(exe) = std::env::current_exe()
+        && let Err(e) = protocol_handler::register(SCHEME, &exe)
+    {
+        tracing::warn!("não deu para registrar {SCHEME}://: {e:#}");
+    }
+    let result = lerri_ui::run(data_dir, link);
+    if let Err(e) = &result {
+        show_fatal(&format!("{e:#}"));
+    }
+    result
+}
+
+/// Aberto pelo Explorer ou por um link, o Windows cria um console só para
+/// nós; na janela ele é só ruído. Aberto de um terminal, o console é
+/// compartilhado e fica (logs continuam aparecendo).
+fn hide_own_console() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::{
+            FreeConsole, GetConsoleProcessList, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
+        };
+        let mut pids = [0u32; 4];
+        // SAFETY: buffer com o tamanho informado.
+        if unsafe { GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) } == 1 {
+            // SAFETY: sem pré-condições. Sem console, os handles padrão ficam
+            // inválidos e escrever neles (logs) derruba o processo; nulo faz a
+            // biblioteca padrão descartar a escrita.
+            unsafe {
+                FreeConsole();
+                for h in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                    SetStdHandle(h, std::ptr::null_mut());
+                }
+            }
+        }
+    }
+}
+
+/// Erro que impede a janela de abrir: sem console, só uma caixa de mensagem.
+fn show_fatal(msg: &str) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+        let text: Vec<u16> = msg.encode_utf16().chain(Some(0)).collect();
+        let title: Vec<u16> = "Lerri Chat".encode_utf16().chain(Some(0)).collect();
+        // SAFETY: strings UTF-16 terminadas em zero.
+        unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR) };
+    }
+    #[cfg(not(windows))]
+    eprintln!("{msg}");
 }
 
 /// Aberto por um link (o Windows cria um console só para nós), a janela

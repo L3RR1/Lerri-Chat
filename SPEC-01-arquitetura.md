@@ -16,10 +16,10 @@ Status: **Draft** · Fase: 0 · Depende de: SPEC-00
 | Captura de câmera | **Media Foundation** (`IMFSourceReader`) | API nativa de câmera do Windows. |
 | Encode de vídeo | **AMF** (AMD), **NVENC** (NVIDIA), **Quick Sync** (Intel) via MFT de hardware do Media Foundation | Codifica na GPU. Codec por hardware: AV1 onde houver, senão HEVC (H.265), senão H.264. |
 | Encode por software (último caso) | **OpenH264** (BSD) | Evita a GPL do x264. |
-| Decode de vídeo | **D3D11VA via build mínimo do FFmpeg** (LGPL, só parsers + hwaccel de H.264/HEVC/AV1) (D-03) | Decodifica na GPU. Na máquina de referência, o Media Foundation não tem decoder HEVC nem AV1 sem a extensão da Store, mas a GPU decodifica os dois pelo D3D11VA (`spikes/video`). |
-| Áudio — codec | **Opus** (`opus` crate) | Padrão de voz em tempo real, leve e excelente a baixo bitrate. |
-| Áudio — processamento | **WebRTC Audio Processing** (AEC3 + supressão de ruído + AGC); **RNNoise** como supressão forte opcional | Cancelamento de eco é difícil de fazer do zero; o módulo do WebRTC é o padrão de mercado. |
-| Captura/saída de áudio | **WASAPI** (modo compartilhado, baixa latência) | API nativa de áudio do Windows. |
+| Decode de vídeo | **D3D11VA via FFmpeg** (LGPL, DLLs carregadas em tempo de execução; o alvo é um build mínimo só com parsers + hwaccel de H.264/HEVC/AV1) (D-03) | Decodifica na GPU. Na máquina de referência, o Media Foundation não tem decoder HEVC nem AV1 sem a extensão da Store, mas a GPU decodifica os dois pelo D3D11VA (`spikes/video`). |
+| Áudio — codec | **Opus** via `unsafe-libopus` (libopus 1.3 traduzida para Rust) | Padrão de voz em tempo real, leve e excelente a baixo bitrate. A tradução dispensa compilador C e cmake no build. |
+| Áudio — processamento | **WebRTC Audio Processing** (AEC3 + supressão de ruído + AGC2) via `aec3`, porte em Rust; **RNNoise** (`nnnoiseless`) como supressão forte opcional | Cancelamento de eco é difícil de fazer do zero; o módulo do WebRTC é o padrão de mercado. Os portes em Rust evitam o build C++ (meson) do original. |
+| Captura/saída de áudio | **WASAPI** (modo compartilhado, baixa latência) via `cpal` | API nativa de áudio do Windows. |
 | Chave local em repouso | **DPAPI** (ou Argon2id com senha) | Proteção nativa do Windows, sem senha obrigatória. |
 
 ### Por que não Electron/web
@@ -124,7 +124,7 @@ A meta "convidado leigo entra em < 60 s" (`SPEC-00`) esbarra em barreiras do pr�
 | **Antivírus** desconfiando de app que captura tela e abre porta UDP | Assinatura de código + envio do binário pra análise da Microsoft/fornecedores antes de cada release. |
 | **Firewall do Defender** ao escutar porta (criador no x1, relay no Windows) | A UI explica antes de o prompt aparecer. O cliente que só conecta não dispara prompt. |
 | **Handler `lerrichat://`** | Registrado em `HKCU\Software\Classes` na primeira execução — sem admin, sem instalador. Colar o link no app sempre funciona como alternativa. |
-| **Licenças de terceiros** (Slint royalty-free, FFmpeg LGPL, OpenH264 BSD) | Tela "Sobre" com atribuições; FFmpeg em build mínimo, linkado de forma compatível com a LGPL. |
+| **Licenças de terceiros** (Slint royalty-free, FFmpeg LGPL, OpenH264 BSD, libopus e RNNoise BSD, porte do WebRTC APM BSD/MIT) | Tela "Sobre" com atribuições. FFmpeg em DLLs carregadas em tempo de execução (LGPL: o usuário pode trocá-las); falta o build mínimo (hoje ~95 MB do build completo). |
 
 ## 10. Riscos de arquitetura
 
@@ -136,4 +136,4 @@ A meta "convidado leigo entra em < 60 s" (`SPEC-00`) esbarra em barreiras do pr�
 | NAT/CGNAT impede conexão direta | IPv6 + PCP/UPnP + x1 assistido por relay + modo servidor (`SPEC-03` §4). |
 | Dependência do iroh (projeto de terceiros, fork próprio do quinn) | Versão fixada; configuração sem serviços da n0 coberta por teste; o crate `net` isola a API do iroh do resto do app. |
 | MLS tem curva de aprendizado | Fase 2 entrega MLS completo; um atalho simétrico só é aceitável como marco interno (`SPEC-06` Fase 2). |
-| `.exe` > 25 MB com FFmpeg + WebRTC APM + Slint | Builds mínimos, LTO, `opt-level = "z"` nas crates frias; medir na CI desde a Fase 0. |
+| `.exe` > 25 MB com FFmpeg + WebRTC APM + Slint | Builds mínimos, LTO, `opt-level = "z"` nas crates frias; medir na CI desde a Fase 0. A voz (Fase 3) levou o `.exe` a 24,85 MiB. Na Fase 4 as dependências passaram a `opt-level = "s"`, menos o código quente (áudio, QUIC, AES, renderer), e o FFmpeg ficou fora do `.exe`: **23,0 MiB com voz, tela e câmera**. |

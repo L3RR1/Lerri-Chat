@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, bail};
 use lerri_client::rooms::{self, SavedRoom};
 use lerri_client::Session;
-use lerri_client::room::{self, Command, Exit, MemberView, OpenHow, RoomCore, RoomEvent};
+use lerri_client::room::{self, Command, Exit, MemberView, OpenHow, PublishSource, RoomCore, RoomEvent};
+use lerri_core::media::Video;
 use lerri_core::invite::{DEFAULT_INVITE_TTL_SECS, HostAddr, Invite, Link};
 use lerri_core::protocol::{Role, RoomMode};
 use lerri_core::unix_now;
@@ -298,7 +299,9 @@ fn print_invite(invite: &Invite) {
 }
 
 const ROOM_HELP: &str =
-    "Digite uma mensagem e Enter para enviar. Comandos: /convite, /membros, /rota, /remover PREFIXO, /sair-da-sala, /sair";
+    "Digite uma mensagem e Enter para enviar. Comandos: /convite, /membros, /rota, /remover PREFIXO, /voz, /mudo, \
+     /desmutar, /sair-da-voz, /tela, /parar-tela, /camera, /parar-camera, /assistir PREFIXO, /ver-camera PREFIXO, \
+     /parar-de-assistir, /sair-da-sala, /sair";
 
 /// Uma linha do teclado vira um comando da sala (`None`: já tratada aqui).
 fn parse_line(line: &str, members: &Mutex<Vec<MemberView>>, route: &Mutex<Option<lerri_client::Route>>) -> Option<Command> {
@@ -307,9 +310,24 @@ fn parse_line(line: &str, members: &Mutex<Vec<MemberView>>, route: &Mutex<Option
         "/sair" | "sair" => Some(Command::Close),
         "/sair-da-sala" => Some(Command::LeaveRoom),
         "/convite" | "convite" => Some(Command::NewInvite),
+        "/voz" => Some(Command::JoinVoice { devices: true }),
+        "/sair-da-voz" => Some(Command::LeaveVoice),
+        "/mudo" => Some(Command::Mute(true)),
+        "/desmutar" => Some(Command::Mute(false)),
+        "/tela" => Some(Command::Publish { source: PublishSource::Screen { monitor: None }, gpu: true }),
+        "/parar-tela" => Some(Command::Unpublish(Video::Screen)),
+        "/camera" => Some(Command::Publish { source: PublishSource::Camera { device: None }, gpu: true }),
+        "/parar-camera" => Some(Command::Unpublish(Video::Camera)),
         "/membros" | "membros" => {
             for v in members.lock().unwrap().iter() {
-                let tags: Vec<&str> = [(v.owner, "dono"), (v.waiting, "aguardando admissão"), (!v.online, "offline")]
+                let tags: Vec<&str> = [
+                    (v.owner, "dono"),
+                    (v.waiting, "aguardando admissão"),
+                    (!v.online, "offline"),
+                    (v.in_voice, "na voz"),
+                    (v.sharing, "compartilhando a tela"),
+                    (v.camera, "câmera ligada"),
+                ]
                     .into_iter()
                     .filter_map(|(on, s)| on.then_some(s))
                     .collect();
@@ -324,6 +342,30 @@ fn parse_line(line: &str, members: &Mutex<Vec<MemberView>>, route: &Mutex<Option
                 None => println!("Sem caminho ativo."),
             }
             None
+        }
+        l if l.starts_with("/assistir ") || l.starts_with("/ver-camera ") => {
+            // Sem janela no terminal: decodifica na GPU e relata fps e banda.
+            let (video, prefix) = match l.split_once(' ') {
+                Some(("/assistir", p)) => (Video::Screen, p),
+                Some((_, p)) => (Video::Camera, p),
+                None => return None,
+            };
+            let prefix = prefix.trim().to_ascii_lowercase();
+            let hits: Vec<_> = members
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|v| if video == Video::Screen { v.sharing } else { v.camera })
+                .filter(|v| v.id.to_string().starts_with(&prefix))
+                .map(|v| v.id)
+                .collect();
+            match hits.as_slice() {
+                [one] => Some(Command::Watch { member: *one, video, target: room::WatchTarget::Headless }),
+                _ => {
+                    println!("Ninguém com {} ligada com esse começo de id. Veja /membros.", video.name());
+                    None
+                }
+            }
         }
         l if l.starts_with("/remover ") => {
             let prefix = l["/remover ".len()..].trim().to_ascii_lowercase();
@@ -363,6 +405,14 @@ async fn room_loop(session: Session, core: RoomCore, data_dir: &Path, invite_hos
     std::thread::spawn(move || {
         for line in std::io::stdin().lines() {
             let Ok(line) = line else { break };
+            if line.trim() == "/parar-de-assistir" {
+                for v in m.lock().unwrap().iter() {
+                    for video in Video::ALL {
+                        let _ = cmds.send(Command::Unwatch { member: v.id, video });
+                    }
+                }
+                continue;
+            }
             if let Some(cmd) = parse_line(line.trim(), &m, &r)
                 && cmds.send(cmd).is_err()
             {
@@ -391,6 +441,24 @@ async fn room_loop(session: Session, core: RoomCore, data_dir: &Path, invite_hos
         RoomEvent::Status(None) => {}
         RoomEvent::Members(v) => *names.lock().unwrap() = v,
         RoomEvent::Invite(inv) => print_invite(&inv),
+        RoomEvent::Voice(v) if v.active => {
+            let state = if v.deafened { "ensurdecido" } else if v.muted { "mudo" } else { "falando quando houver voz" };
+            println!("* Voz: {state}{}", v.devices.map(|d| format!(" ({d})")).unwrap_or_default());
+        }
+        RoomEvent::Voice(_) => println!("* Fora da voz."),
+        RoomEvent::Stream { video, view } => match view.sharing {
+            Some(info) => println!("* Sua {} está no ar ({info}); {} assistindo.", video.name(), view.watchers),
+            None => println!("* Sua {} não está no ar.", video.name()),
+        },
+        RoomEvent::Video(info) if !info.can_encode => {
+            println!("* Esta máquina não tem encoder de vídeo por hardware; /tela e /camera não vão funcionar.")
+        }
+        RoomEvent::VoiceHandle(_)
+        | RoomEvent::OutgoingHandle { .. }
+        | RoomEvent::KeyframeRequested { .. }
+        | RoomEvent::Video(_)
+        | RoomEvent::Watching(_)
+        | RoomEvent::VideoClosed { .. } => {}
     };
     let exit =
         room::run(session, core, data_dir.to_path_buf(), invite_host, rx, emit, move |rt| *route.lock().unwrap() = rt).await;

@@ -94,9 +94,24 @@ MLS exige que todos apliquem os commits na mesma ordem. O **relay é o Delivery 
 - **Update** periódico a cada 12 h de conexão.
 
 ### 4.3 Mídia (voz/tela/câmera) — SFrame
-- Mídia é cifrada com **SFrame (RFC 9605)**. Cada remetente tem sua própria chave, derivada do grupo pelo **MLS exporter** (`exporter("lerrichat sframe", sender_index, epoch)`). Chave por remetente evita reuso de nonce entre transmissores que compartilham o mesmo grupo.
+- Mídia é cifrada com **SFrame (RFC 9605)**. Cada remetente tem sua própria chave, derivada do grupo pelo **MLS exporter** como no RFC 9605 §5.2 (`MLS-Exporter("SFrame 1.0")` → `base_key` pelo índice de folha do remetente; o KID carrega o índice e o epoch). Chave por remetente evita reuso de nonce entre transmissores que compartilham o mesmo grupo.
 - O SFU precisa de um **cabeçalho mínimo em claro** pra rotear: id do stream, camada de simulcast, flag de keyframe, número de sequência. Esse cabeçalho é **autenticado** (entra como AAD no AEAD), mas não é sigiloso. Ele revela metadados de mídia, nunca conteúdo.
 - O **SFU roteia sem a chave** — não consegue decifrar nem um frame.
+
+### 4.3.1 Como ficou na Fase 3 (voz)
+- **Suíte** `AES_128_GCM_SHA256_128` (0x0004). Implementação própria e pequena em `lerri-crypto::sframe`, testada contra os exemplos de cabeçalho do RFC.
+- **Datagrama** = cabeçalho de roteamento de 4 bytes (versão, tipo de stream, keyframe, início de fala, camada, sequência) + quadro SFrame. O cabeçalho entra no AEAD como metadado: o relay o lê, mas não o altera sem o quadro deixar de decifrar.
+- **Contador sorteado por sessão** (47 bits): o estado MLS de salas de servidor sobrevive a reinícios, e recomeçar o contador do zero no mesmo epoch repetiria nonce.
+- **Janela anti-replay** de 128 quadros por remetente; chaves dos 3 últimos epochs guardadas, para quadros que chegam logo depois de um commit.
+- **Troca de chave:** a cada epoch novo (entrada, saída, remoção, `Update`) a voz passa a cifrar com a chave nova na hora. Quem foi removido não deriva a chave do epoch seguinte.
+- **Limite conhecido:** todo membro deriva a chave de todos os remetentes (é o mesmo segredo do epoch). O SFrame prova que o quadro veio *de alguém do grupo*, não *de qual* membro, igual ao uso do RFC com MLS. Um membro malicioso poderia falar "no nome" de outro índice; o relay ainda só repassa voz de quem se autenticou na conexão.
+- **O relay** lê só o cabeçalho de roteamento e repassa o datagrama, sem cópia, a quem marcou presença no canal de voz (`Frame::Voice`). Ele sabe quem está na voz e quando cada um fala (tamanho e ritmo dos pacotes): metadado, já listado no §5.
+
+### 4.3.2 Como ficou na Fase 4 (tela)
+- **Um quadro SFrame por quadro de vídeo** (não por pacote), num stream QUIC próprio. O codec vai dentro da parte cifrada; o cabeçalho de roteamento (tipo, keyframe, camada, sequência) vai em claro e autenticado, como na voz. Um relay que marque um P-frame como keyframe, por exemplo, faz o quadro deixar de decifrar.
+- **Voz e tela usam o mesmo `Keyring`** da sala, então um contador só por remetente: nonce nunca se repete entre os dois.
+- **O que o relay passa a saber:** quem compartilha a tela ou liga a câmera, quem assiste a quê, e o tamanho e o ritmo dos quadros (o que revela quanto a tela muda). É metadado, como no §5. O conteúdo e o codec continuam cifrados.
+- **Capacidades de decode** (codecs que cada um decodifica) vão pelo MLS, ponta a ponta; o relay não as vê.
 
 ### 4.4 Transporte
 QUIC já dá TLS 1.3 entre cliente e relay. A E2EE é uma **segunda camada** por cima, pra que nem o relay leia. Defesa em profundidade.
@@ -109,7 +124,7 @@ QUIC já dá TLS 1.3 entre cliente e relay. A E2EE é uma **segunda camada** por
 | O **IP** de quem conecta | Conteúdo de texto, voz, tela, câmera |
 | Tamanho e tempo dos pacotes (metadados) | A chave do grupo / de mídia |
 | A que sala o pacote pertence (pra rotear) | O segredo de admissão `s` dos convites |
-| Cabeçalho SFrame: stream, camada, keyframe | Qual membro disse o quê (conteúdo) |
+| Cabeçalho de roteamento da mídia: stream, camada, keyframe, início de fala, sequência; quem está na voz, quem publica tela ou câmera e quem assiste a quê | Qual membro disse o quê (conteúdo) |
 
 Isso cumpre "servidor sem acesso ao conteúdo" (princípio 2). O que **não** dá pra esconder de quem hospeda é o IP e os metadados de roteamento — ver modelo de ameaça.
 

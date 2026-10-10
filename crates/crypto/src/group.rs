@@ -20,6 +20,7 @@ use openmls_traits::OpenMlsProvider;
 use sha2::{Digest, Sha256};
 
 use crate::Identity;
+use crate::sframe::{self, MediaEpoch};
 
 pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 /// Epochs anteriores cujas chaves ficam guardadas, para decifrar mensagens que
@@ -346,10 +347,23 @@ impl GroupState {
         }
     }
 
-    /// Segredo exportado do epoch atual (SFrame usa na Fase 3).
+    /// Segredo exportado do epoch atual.
     pub fn export_secret(&self, label: &str, len: usize) -> Result<Vec<u8>, GroupError> {
         let g = self.group.as_ref().ok_or(GroupError::NoGroup)?;
         g.export_secret(self.provider.crypto(), label, &[], len).map_err(mls)
+    }
+
+    /// Segredo de mídia (SFrame) do epoch atual, com nosso índice de folha e
+    /// o de cada membro (SPEC-02 §4.3).
+    pub fn media_epoch(&self) -> Result<MediaEpoch, GroupError> {
+        let g = self.group.as_ref().ok_or(GroupError::NoGroup)?;
+        let secret = self.export_secret(sframe::EXPORTER_LABEL, 32)?;
+        Ok(MediaEpoch {
+            epoch: g.epoch().as_u64(),
+            secret: zeroize::Zeroizing::new(secret.try_into().expect("pedimos 32 bytes")),
+            me: g.own_leaf_index().u32(),
+            members: g.members().filter_map(|m| Some((m.index.u32(), member_of(&m.credential)?))).collect(),
+        })
     }
 }
 
@@ -441,6 +455,42 @@ mod tests {
         b.g.process(&ca.data).unwrap();
         assert_eq!(a.g.epoch(), b.g.epoch());
         assert_eq!(a.g.export_secret("t", 32).unwrap(), b.g.export_secret("t", 32).unwrap());
+    }
+
+    #[test]
+    fn media_keys_follow_the_group() {
+        let (mut a, mut b, mut c) = (peer(), peer(), peer());
+        a.g.create().unwrap();
+        let commit = a.g.add(&b.g.key_package().unwrap()).unwrap();
+        a.g.confirm_pending().unwrap();
+        b.g.join(commit.welcome.as_ref().unwrap()).unwrap();
+        let commit = a.g.add(&c.g.key_package().unwrap()).unwrap();
+        a.g.confirm_pending().unwrap();
+        b.g.process(&commit.data).unwrap();
+        c.g.join(commit.welcome.as_ref().unwrap()).unwrap();
+
+        let (ea, eb) = (a.g.media_epoch().unwrap(), b.g.media_epoch().unwrap());
+        assert_eq!(ea.epoch, eb.epoch);
+        assert_eq!(*ea.secret, *eb.secret);
+        let before = *ea.secret;
+        assert_ne!(ea.me, eb.me);
+        let mut ka = sframe::Keyring::new();
+        let mut kb = sframe::Keyring::new();
+        ka.set_epoch(ea);
+        kb.set_epoch(eb);
+        let mut frame = Vec::new();
+        ka.seal(&[], b"oi", &mut frame).unwrap();
+        assert_eq!(kb.open(&[], &frame).unwrap(), (a.id.member_id(), b"oi".to_vec()));
+
+        // c é removido: o segredo do epoch novo é outro e c fica sem grupo.
+        let commit = a.g.remove(c.id.member_id()).unwrap();
+        a.g.confirm_pending().unwrap();
+        b.g.process(&commit.data).unwrap();
+        c.g.process(&commit.data).unwrap();
+        assert!(c.g.media_epoch().is_err());
+        let next = a.g.media_epoch().unwrap();
+        assert_ne!(*next.secret, before);
+        assert_eq!(*next.secret, *b.g.media_epoch().unwrap().secret);
     }
 
     #[test]

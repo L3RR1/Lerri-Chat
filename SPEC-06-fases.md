@@ -11,6 +11,7 @@ Desenvolvimento guiado por especificação: cada fase tem escopo fechado, crité
 | D-01 | NAT traversal: **iroh** com relay próprio × implementação própria sobre `quinn` (`SPEC-03` §4.4) | **Decidido: iroh**, só com relay próprio ([`spikes/p2p`](spikes/p2p/README.md)). Validar NAT real na Fase 1. |
 | D-02 | UI e render de vídeo sem cópia (`SPEC-01` §10) | **Decidido: Slint com renderer software + vídeo em janela-filha com swapchain D3D11** ([`spikes/video`](spikes/video/README.md)). |
 | D-03 | Decode: FFmpeg mínimo (D3D11VA) × MFT de hardware (`SPEC-01` §1) | **Decidido: FFmpeg LGPL com D3D11VA.** O MF não decodifica HEVC/AV1 sem a extensão da Store. |
+| D-04 | Transporte da tela: datagramas (como a voz) × um stream QUIC por quadro | **Decidido na Fase 4: stream por quadro** (`SPEC-03` §6.3). Keyframes têm centenas de pacotes; em datagramas, 1% de perda já os estragaria. O relay compensa o atraso pulando quadros até o próximo keyframe. |
 | P-01 | Casar os hex de roxo com o `Color.kt` do LerriNFC (`SPEC-05`) | Pendente, antes da Fase 6 |
 
 ---
@@ -96,11 +97,15 @@ Escopo:
 - Controle de congestionamento: BBR + fila curta de datagramas + rate control na aplicação — `SPEC-03` §6.1.
 - Presença de "falando agora" — `RF-09`.
 
+Estado: **implementada; falta o teste de ouvido entre dois PCs.** Voz na janela (cartão "Voz": entrar, mudo, ensurdecer, supressão forte) e no terminal (`/voz`, `/mudo`, `/desmutar`, `/sair-da-voz`). Detalhes em `SPEC-04` §1.1, `SPEC-02` §4.3.1 e `SPEC-03` §6.1. Testes: `crates/media` (Opus, jitter, VAD, AEC, pipeline), `crates/crypto/src/sframe.rs` e `crates/host/tests/voice.rs` (ponta a ponta com relay real).
+
 Aceite:
-- [ ] Voz em grupo com < 150 ms de latência (mesma região).
-- [ ] CPU < 2% em call de voz no Ryzen 5 5600.
-- [ ] SFU repassa voz sem decifrar.
-- [ ] Sem eco perceptível com caixa de som (sem fone).
+- [ ] Voz em grupo com < 150 ms de latência (mesma região). *Estimado em 60–90 ms + rede (`SPEC-04` §1.1). Falta medir boca-a-ouvido entre dois PCs.*
+- [x] CPU < 2% em call de voz no Ryzen 5 5600. *Processo real, os dois lados falando o tempo todo: 0,26% da máquina (3,1% de um núcleo), 24 MB de RAM. Só o pipeline: 0,12%.*
+- [x] SFU repassa voz sem decifrar. *O relay lê só o cabeçalho de roteamento e não tem chave. Testado: quem não está na voz não recebe, e a troca de epoch na remoção não interrompe quem fica.*
+- [ ] Sem eco perceptível com caixa de som (sem fone). *AEC3 ligado; num eco sintético cai mais de 15 dB. Falta ouvir entre dois PCs com caixa de som.*
+
+Limitações conhecidas: sem push-to-talk e sem escolha de dispositivo (usa o padrão do Windows); o binário chegou a 24,85 MiB, perto do limite de 25 (`SPEC-01` §10).
 
 ---
 
@@ -115,12 +120,16 @@ Escopo:
 - Simulcast 2–3 camadas (só modo servidor) + seleção por destinatário no SFU; AV1 SVC onde houver.
 - Decode HW (D3D11VA) só do que está visível.
 
+Estado: **implementada sem simulcast; falta o teste entre dois PCs.** Compartilhar e assistir na janela (cartão "Tela", botão "Assistir" na lista de membros, vídeo acima do chat) e no terminal (`/tela`, `/parar-tela`, `/assistir PREFIXO`, que decodifica sem mostrar e relata fps e banda). Quadros vão em **um stream QUIC por quadro**, não em datagramas (`SPEC-03` §6.3). Detalhes em `SPEC-04` §2.1. Testes: `crates/media/src/screen.rs` (selagem, reordenação, controle de bitrate), `crates/host/tests/screen.rs` (ponta a ponta com relay real, sem GPU) e `screen_roundtrip` (tela real → encoder → decoder → janela, com GPU e FFmpeg).
+
 Aceite:
-- [ ] Tela de código 1080p < 1 Mbps e < 3% de CPU no transmissor.
-- [ ] Tela com jogo 1080p60 em 2–5 Mbps adaptativo.
-- [ ] Minimizar a transmissão libera o decoder (CPU cai).
-- [ ] Encoder certo escolhido automaticamente por GPU.
-- [ ] Receptor sem decode HEVC entra na sala e o transmissor desce de codec sozinho.
+- [ ] Tela de código 1080p < 1 Mbps e < 3% de CPU no transmissor. *CPU: 0,09% da máquina (1,1% de um núcleo) transmitindo a 58 fps, processo real. Banda com a tela parada: falta medir (a tela de teste tinha animação o tempo todo).*
+- [ ] Tela com jogo 1080p60 em 2–5 Mbps adaptativo. *Controle de bitrate entre 0,3 e 5 Mbps guiado pelos quadros em trânsito. Falta medir com jogo.*
+- [x] Minimizar a transmissão libera o decoder (CPU cai). *"Fechar" encerra a thread de vídeo; janela principal minimizada faz o relay parar de mandar (volta num keyframe). Testado: quem para de assistir não recebe mais nenhum quadro.*
+- [x] Encoder certo escolhido automaticamente por GPU. *Enumera os MFTs de hardware do Media Foundation. Na RX 6700 XT escolhe AMDh265Encoder / AMDh264Encoder. Só testado em AMD.*
+- [ ] Receptor sem decode HEVC entra na sala e o transmissor desce de codec sozinho. *Implementado: cada membro anuncia o que decodifica pelo MLS, o transmissor renegocia a cada 250 ms e recria o encoder com keyframe. A negociação e os dois encoders (HEVC e H.264) estão testados; falta um receptor real sem HEVC.*
+
+Fora desta entrega: simulcast e AV1 SVC (por enquanto o relay pula quadros para quem está atrasado e retoma no keyframe), OpenH264 por software (sem encoder de hardware não dá para compartilhar), compartilhar uma janela só (hoje é o monitor inteiro), várias telas assistidas ao mesmo tempo, e um FFmpeg mínimo para distribuir (hoje vão ao lado do `.exe` as DLLs do build LGPL completo: `avcodec`, `avutil`, `swresample`, ~95 MB).
 
 ---
 
@@ -132,9 +141,13 @@ Escopo:
 - Mesmo caminho de encode/decode da tela; 720p30 ~1–1.5 Mbps.
 - Tela + câmera simultâneas como streams independentes, respeitando o limite de sessões de encoder.
 
+Estado: **implementada sem simulcast; falta o teste entre dois PCs.** Câmera na janela (cartão "Câmera" com escolha do dispositivo, botão "Câmera" na lista de membros, imagem ao lado da tela no painel de vídeo) e no terminal (`/camera`, `/parar-camera`, `/ver-camera PREFIXO`). O protocolo passou de "tela" para "stream de vídeo" (`Publish`, `Watch` e pedidos de keyframe com o tipo: tela ou câmera), então dá para publicar os dois e assistir a uma tela e uma câmera ao mesmo tempo. Detalhes em `SPEC-04` §3.1. Testes: `crates/host/tests/screen.rs` (tela e câmera juntas pelo relay real, cada quadro no destino certo) e `camera_roundtrip` (webcam real → encoder → decoder).
+
 Aceite:
-- [ ] Câmera + tela ao mesmo tempo sem estourar as metas de CPU.
-- [ ] Degradação graciosa por simulcast em rede ruim.
+- [x] Câmera + tela ao mesmo tempo sem estourar as metas de CPU. *Processos reais, mesma máquina: quem publica tela (1080×1920 a 58 fps) e câmera (720p) gasta 0,17% da máquina (2% de um núcleo), 100 MB; quem assiste aos dois, 0,05% e 82 MB. Na primeira de três rodadas os dois streams pararam por ~5 s logo no início e voltaram sozinhos; não se repetiu.*
+- [ ] Degradação graciosa por simulcast em rede ruim. *Sem simulcast ainda. No lugar, o relay pula quadros de quem está atrasado até o próximo keyframe, e a câmera desiste antes da tela (4 quadros em trânsito contra 8). Falta testar com rede ruim de verdade.*
+
+O limite de sessões de encoder (NVENC de consumo) não chega a pesar: cada pessoa usa no máximo duas, tela e câmera.
 
 ---
 

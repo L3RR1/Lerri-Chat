@@ -3,6 +3,7 @@
 
 pub mod ids;
 pub mod invite;
+pub mod media;
 pub mod paths;
 pub mod protocol;
 

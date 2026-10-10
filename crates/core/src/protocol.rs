@@ -5,10 +5,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::invite::{AdminKey, RouteToken, TokenHash};
+use crate::media::Video;
 use crate::{MemberId, RoomId};
 
 /// ALPN do protocolo. Muda quando o formato do fio quebra compatibilidade.
-pub const ALPN: &[u8] = b"lerrichat/2";
+pub const ALPN: &[u8] = b"lerrichat/3";
 
 /// Tamanho máximo de um frame, para que um peer não force alocações gigantes.
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
@@ -97,15 +98,46 @@ pub enum Frame {
     App { data: Vec<u8> },
     /// Sai da sala de vez.
     Leave,
+    /// Entra (`true`) ou sai do canal de voz. O relay só repassa datagramas
+    /// de voz entre quem está nele.
+    Voice { on: bool },
+    /// Começa ou para de publicar a tela ou a câmera. Os quadros vão em
+    /// streams QUIC unidirecionais, um por quadro (`media`).
+    Publish { video: Video, on: bool },
+    /// Passa a receber (ou não) a tela ou a câmera de `member`.
+    Watch { member: MemberId, video: Video, on: bool },
+    /// Pede um keyframe a `member` (começou a assistir, perdeu dados ou não
+    /// conseguiu decodificar).
+    KeyframeRequest { member: MemberId, video: Video },
 
     // Relay → cliente.
     /// `epoch`: último epoch MLS que o relay ordenou. `owner`: dono da sala.
-    Welcome { room: RoomId, mode: RoomMode, role: Role, online: Vec<MemberId>, owner: MemberId, epoch: u64 },
+    /// `voice`: quem está no canal de voz. `publishing`: quem publica tela ou
+    /// câmera.
+    Welcome {
+        room: RoomId,
+        mode: RoomMode,
+        role: Role,
+        online: Vec<MemberId>,
+        owner: MemberId,
+        epoch: u64,
+        voice: Vec<MemberId>,
+        publishing: Vec<(MemberId, Video)>,
+    },
     Refused(Refusal),
     InviteRegistered { token_hash: TokenHash },
     /// Alguém ficou online. `first_time` quando acabou de entrar pelo convite.
     MemberOnline { member: MemberId, first_time: bool },
     MemberOffline { member: MemberId },
+    /// Alguém entrou ou saiu do canal de voz.
+    MemberVoice { member: MemberId, on: bool },
+    /// Alguém começou ou parou de publicar a tela ou a câmera.
+    MemberPublish { member: MemberId, video: Video, on: bool },
+    /// Para quem publica: alguém precisa de um keyframe.
+    KeyframeRequested { video: Video },
+    /// Para quem publica: quantos estão assistindo (zero: pode pausar o
+    /// encoder).
+    Watchers { video: Video, count: u32 },
     /// Repassado aos membros: alguém quer entrar no grupo.
     JoinRequested { member: MemberId, token_hash: Option<TokenHash>, key_package: Vec<u8>, mac: [u8; 32] },
     /// Commit aceito de outro membro, ou do log quando você volta.

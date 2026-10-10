@@ -1,9 +1,9 @@
-//! Identidade, segredos em repouso e (nas próximas fases) MLS, SFrame e
-//! convites (SPEC-02).
+//! Identidade, segredos em repouso, grupo MLS e SFrame (SPEC-02).
 
 pub mod group;
 pub mod identity;
 pub mod secret_store;
+pub mod sframe;
 
 pub use identity::Identity;
 pub use lerri_core::ids::hex;

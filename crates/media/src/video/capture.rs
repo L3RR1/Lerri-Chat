@@ -1,0 +1,185 @@
+//! Captura de tela pelo Windows.Graphics.Capture (SPEC-04 §2): o quadro fica
+//! na GPU, e o WGC só entrega quadro novo quando algo muda na tela.
+//!
+//! O callback do WGC só copia o quadro para a textura "mais recente" (cópia
+//! na GPU) e avisa. Quem codifica pega essa textura no próprio ritmo, então
+//! uma rajada de mudanças vira um quadro só, e o último estado de uma tela
+//! que parou nunca se perde.
+
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+use anyhow::Context;
+use windows::Foundation::TypedEventHandler;
+use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession};
+use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
+use windows::Graphics::DirectX::DirectXPixelFormat;
+use windows::Win32::Foundation::{LPARAM, RECT};
+use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, ID3D11Texture2D};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW};
+use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
+use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::core::{BOOL, Interface};
+
+use super::d3d::D3D;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Monitor {
+    pub handle: isize,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
+/// Monitores ligados, o principal primeiro.
+pub fn monitors() -> Vec<Monitor> {
+    unsafe extern "system" fn each(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> BOOL {
+        // SAFETY: `data` é o `Vec` passado abaixo, vivo durante a enumeração.
+        let list = unsafe { &mut *(data.0 as *mut Vec<Monitor>) };
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+        if unsafe { GetMonitorInfoW(m, &mut info as *mut _ as *mut _) }.as_bool() {
+            let r = info.monitorInfo.rcMonitor;
+            let name = String::from_utf16_lossy(&info.szDevice).trim_end_matches('\0').trim_start_matches("\\\\.\\").to_string();
+            list.push(Monitor {
+                handle: m.0 as isize,
+                name,
+                width: (r.right - r.left) as u32,
+                height: (r.bottom - r.top) as u32,
+                primary: info.monitorInfo.dwFlags & 1 != 0,
+            });
+        }
+        true.into()
+    }
+    let mut list: Vec<Monitor> = Vec::new();
+    // SAFETY: callback acima; `list` vive até o fim da chamada.
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(each), LPARAM(&mut list as *mut _ as isize));
+    }
+    list.sort_by_key(|m| !m.primary);
+    list
+}
+
+/// Último quadro capturado, esperando o encoder.
+pub struct Latest {
+    pub texture: ID3D11Texture2D,
+    pub size: (u32, u32),
+    /// Chegou quadro novo desde a última vez que o encoder pegou.
+    pub fresh: bool,
+    pub at: Instant,
+}
+
+pub struct Shared {
+    pub latest: Mutex<Option<Latest>>,
+    pub signal: Condvar,
+}
+
+// SAFETY: texturas D3D11 de um dispositivo free-threaded com proteção multithread.
+unsafe impl Send for Shared {}
+unsafe impl Sync for Shared {}
+
+impl Shared {
+    /// Espera um quadro novo por até `timeout`.
+    pub fn wait_fresh(&self, timeout: Duration) -> bool {
+        let guard = self.latest.lock().unwrap();
+        let (guard, _) =
+            self.signal.wait_timeout_while(guard, timeout, |l| !l.as_ref().is_some_and(|l| l.fresh)).unwrap();
+        guard.as_ref().is_some_and(|l| l.fresh)
+    }
+}
+
+pub struct Capture {
+    pub shared: Arc<Shared>,
+    pool: Direct3D11CaptureFramePool,
+    session: GraphicsCaptureSession,
+    pub size: (u32, u32),
+}
+
+impl Capture {
+    pub fn is_supported() -> bool {
+        GraphicsCaptureSession::IsSupported().unwrap_or(false)
+    }
+
+    pub fn start(d3d: &D3D, monitor: isize) -> anyhow::Result<Self> {
+        anyhow::ensure!(Self::is_supported(), "este Windows não tem a captura de tela moderna (WGC)");
+        let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+        let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(HMONITOR(monitor as *mut _)) }
+            .context("monitor não pode ser capturado")?;
+        let size = item.Size()?;
+        let winrt_device: IDirect3DDevice = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&d3d.device.cast::<IDXGIDevice>()?)? }.cast()?;
+        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+            &winrt_device,
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            2,
+            size,
+        )?;
+        let shared = Arc::new(Shared { latest: Mutex::new(None), signal: Condvar::new() });
+        let (s, dev) = (shared.clone(), d3d.clone());
+        let current = Mutex::new((size.Width, size.Height));
+        pool.FrameArrived(&TypedEventHandler::new(move |pool: windows::core::Ref<Direct3D11CaptureFramePool>, _| {
+            let Some(pool) = pool.as_ref() else { return Ok(()) };
+            let frame = pool.TryGetNextFrame()?;
+            let content = frame.ContentSize()?;
+            let mut cur = current.lock().unwrap();
+            if (content.Width, content.Height) != *cur && content.Width > 0 && content.Height > 0 {
+                // Resolução mudou: o pool passa a entregar no tamanho novo.
+                *cur = (content.Width, content.Height);
+                pool.Recreate(&winrt_device_of(&dev)?, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, content)?;
+                return Ok(());
+            }
+            let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
+            let src: ID3D11Texture2D = unsafe { access.GetInterface()? };
+            let mut latest = s.latest.lock().unwrap();
+            let size = (cur.0 as u32, cur.1 as u32);
+            drop(cur);
+            if latest.as_ref().is_none_or(|l| l.size != size) {
+                match dev.texture(size.0, size.1, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE) {
+                    Ok(texture) => *latest = Some(Latest { texture, size, fresh: false, at: Instant::now() }),
+                    Err(e) => {
+                        tracing::warn!("captura: {e:#}");
+                        return Ok(());
+                    }
+                }
+            }
+            let l = latest.as_mut().expect("criada acima");
+            // SAFETY: mesmo dispositivo, mesmo tamanho e formato.
+            unsafe { dev.ctx.CopyResource(&l.texture, &src) };
+            l.fresh = true;
+            l.at = Instant::now();
+            drop(latest);
+            s.signal.notify_all();
+            Ok(())
+        }))?;
+        let session = pool.CreateCaptureSession(&item)?;
+        let _ = session.SetIsCursorCaptureEnabled(true);
+        // Windows 11: sem a borda amarela em volta da tela compartilhada.
+        let _ = session.SetIsBorderRequired(false);
+        session.StartCapture()?;
+        Ok(Self { shared, pool, session, size: (size.Width as u32, size.Height as u32) })
+    }
+}
+
+fn winrt_device_of(d3d: &D3D) -> windows::core::Result<IDirect3DDevice> {
+    unsafe { CreateDirect3D11DeviceFromDXGIDevice(&d3d.device.cast::<IDXGIDevice>()?)? }.cast()
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        let _ = self.session.Close();
+        let _ = self.pool.Close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "lista os monitores desta máquina"]
+    fn list_monitors() {
+        for m in super::monitors() {
+            println!("{m:?}");
+        }
+    }
+}

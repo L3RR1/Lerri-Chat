@@ -13,3 +13,35 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Tamanho do .exe (RNF-02): o grosso do código (UI, fontes, HTTP do ponto de
+# encontro, MLS, serde) é frio e vai otimizado para tamanho; o que roda o
+# tempo todo numa chamada continua em opt-level 3. Economiza ~5 MB.
+[profile.release.package."*"]
+opt-level = "s"
+
+[profile.release.package.lerri-media]
+opt-level = 3
+[profile.release.package.aec3]
+opt-level = 3
+[profile.release.package.unsafe-libopus]
+opt-level = 3
+[profile.release.package.nnnoiseless]
+opt-level = 3
+[profile.release.package.rustfft]
+opt-level = 3
+[profile.release.package.noq-proto]
+opt-level = 3
+[profile.release.package.aes-gcm]
+opt-level = 3
+[profile.release.package.aes]
+opt-level = 3
+[profile.release.package.ghash]
+opt-level = 3
+[profile.release.package.i-slint-renderer-software]
+opt-level = 3
+
+# O build script do ffmpeg-sys (bindgen) estoura a pilha de 1 MB do Windows
+# quando compilado sem otimização.
+[profile.dev.build-override]
+opt-level = 2

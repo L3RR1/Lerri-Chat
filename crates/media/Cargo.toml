@@ -6,3 +6,22 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+aec3 = "0.4.0"
+bytes = "1"
+lerri-core = { version = "0.0.1", path = "../core" }
+lerri-crypto = { version = "0.0.1", path = "../crypto" }
+nnnoiseless = { version = "0.5.2", default-features = false }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+unsafe-libopus = "0.2.0"
+
+# Dispositivos de áudio (WASAPI) só no Windows; o resto do pipeline é
+# portável e roda nos testes de qualquer plataforma.
+[target."cfg(windows)".dependencies]
+anyhow = "1.0.104"
+cpal = "0.18.2"
+libloading = "0.8"
+windows = { version = "0.62.2", features = ["Foundation", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_Variant", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+zeroize = "1.9.1"

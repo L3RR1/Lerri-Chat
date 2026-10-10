@@ -4,13 +4,18 @@
 
 pub mod room;
 pub mod rooms;
+pub mod screen;
 pub mod settings;
+#[cfg(windows)]
+pub mod video;
+pub mod voice;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use lerri_core::invite::{AdmissionSecret, HostAddr, Invite, RouteToken};
+use lerri_core::media::Video;
 use lerri_core::protocol::{ALPN, Auth, Frame, Refusal, Role, RoomMode};
 use lerri_core::{MemberId, RoomId, unix_now};
 use lerri_crypto::Identity;
@@ -27,6 +32,10 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 pub enum Event {
     Online { member: MemberId, first_time: bool },
     Offline { member: MemberId },
+    /// Entrou (`on`) ou saiu do canal de voz.
+    Voice { member: MemberId, on: bool },
+    /// Começou (`on`) ou parou de publicar a tela ou a câmera.
+    Publish { member: MemberId, video: Video, on: bool },
     /// A conexão com o host caiu (ou foi substituída por outra).
     Disconnected(String),
     /// Frames do MLS e de membros (tratados por [`room::RoomCore`]).
@@ -56,6 +65,10 @@ pub struct Session {
     pub owner: MemberId,
     /// Último epoch MLS que o relay ordenou.
     pub relay_epoch: u64,
+    /// Quem estava no canal de voz quando entrou.
+    pub voice: Vec<MemberId>,
+    /// Quem estava publicando tela ou câmera quando entrou.
+    pub publishing: Vec<(MemberId, Video)>,
 }
 
 impl Session {
@@ -82,14 +95,14 @@ impl Session {
             let reply =
                 tokio::time::timeout(REPLY_TIMEOUT, read_frame(&mut recv)).await.context("host não respondeu")??;
             match reply {
-                Some(Frame::Welcome { room, mode, role, online, owner, epoch }) => {
-                    Ok((conn, send, recv, room, mode, role, online, owner, epoch))
+                Some(Frame::Welcome { room, mode, role, online, owner, epoch, voice, publishing }) => {
+                    Ok((conn, send, recv, room, mode, role, online, owner, epoch, voice, publishing))
                 }
                 Some(Frame::Refused(r)) => Err(anyhow::Error::new(r)),
                 other => bail!("resposta inesperada do host: {other:?}"),
             }
         };
-        let (conn, send, mut recv, room, mode, role, online, owner, relay_epoch) = match handshake.await {
+        let (conn, send, mut recv, room, mode, role, online, owner, relay_epoch, voice, publishing) = match handshake.await {
             Ok(parts) => parts,
             Err(e) => {
                 endpoint.close().await;
@@ -109,6 +122,12 @@ impl Session {
                     }
                     Ok(Some(Frame::MemberOffline { member })) => {
                         let _ = tx.send(Event::Offline { member });
+                    }
+                    Ok(Some(Frame::MemberVoice { member, on })) => {
+                        let _ = tx.send(Event::Voice { member, on });
+                    }
+                    Ok(Some(Frame::MemberPublish { member, video, on })) => {
+                        let _ = tx.send(Event::Publish { member, video, on });
                     }
                     Ok(Some(reply @ (Frame::InviteRegistered { .. } | Frame::Refused(_)))) => {
                         // Recusa sem ninguém esperando é de um commit: vai para a sala.
@@ -145,6 +164,8 @@ impl Session {
             online,
             owner,
             relay_epoch,
+            voice,
+            publishing,
         })
     }
 
@@ -179,6 +200,11 @@ impl Session {
             inviter: self.me,
             expires_at,
         })
+    }
+
+    /// A conexão QUIC com o host (datagramas de mídia).
+    pub fn connection(&self) -> Connection {
+        self.conn.clone()
     }
 
     /// Caminho que a conexão está usando agora (direto ou pelo ponto de encontro).

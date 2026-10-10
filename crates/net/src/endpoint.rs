@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::Context;
 use iroh::dns::DnsResolver;
-use iroh::endpoint::{BindOpts, PortmapperConfig, presets};
+use iroh::endpoint::{BindOpts, PortmapperConfig, QuicTransportConfig, presets};
 use iroh::{Endpoint, EndpointAddr, NetReportConfig, PublicKey, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr};
 use iroh_relay::RelayQuicConfig;
 use lerri_core::invite::{Candidate, HostAddr, MeetingPoint};
@@ -10,6 +10,11 @@ use lerri_core::protocol::ALPN;
 
 use crate::dns::{LocalResolver, MEET_HOST};
 use crate::pin;
+
+/// Bytes de datagramas esperando para sair, por conexão.
+const DATAGRAM_SEND_BUFFER: usize = 32 * 1024;
+/// Quadros de tela em trânsito por conexão (um stream cada).
+const MAX_UNI_STREAMS: u32 = 256;
 
 pub struct EndpointOpts {
     pub secret: SecretKey,
@@ -42,6 +47,7 @@ pub async fn bind(opts: EndpointOpts) -> anyhow::Result<Endpoint> {
         .alpns(if opts.accept { vec![ALPN.to_vec()] } else { vec![] })
         .portmapper_config(if opts.portmap { PortmapperConfig::default() } else { PortmapperConfig::Disabled })
         .net_report_config(net_report())
+        .transport_config(transport())
         .dns_resolver(DnsResolver::custom(resolver(opts.meet.as_ref())));
     b = match &opts.meet {
         Some(m) => b
@@ -77,6 +83,20 @@ pub async fn endpoint_addr(host: &HostAddr) -> anyhow::Result<EndpointAddr> {
     }
     anyhow::ensure!(!addrs.is_empty(), "o convite não tem nenhum caminho até o host");
     Ok(EndpointAddr::from_parts(key, addrs))
+}
+
+/// QUIC ajustado para tempo real (SPEC-03 §6.1):
+/// - BBR no lugar do Cubic: não enche o buffer do roteador e sofre menos com
+///   perda isolada;
+/// - fila de datagramas curta: datagrama velho é descartado, nunca atrasado
+///   (~50 ms a 5 Mbps).
+fn transport() -> QuicTransportConfig {
+    QuicTransportConfig::builder()
+        .congestion_controller_factory(std::sync::Arc::new(noq_proto::congestion::Bbr3Config::default()))
+        .datagram_send_buffer_size(DATAGRAM_SEND_BUFFER)
+        // Tela: um stream unidirecional por quadro (SPEC-03 §6.1).
+        .max_concurrent_uni_streams(iroh::endpoint::VarInt::from_u32(MAX_UNI_STREAMS))
+        .build()
 }
 
 /// Sem a detecção de portal cativo: ela faz um GET em HTTP puro na porta 80

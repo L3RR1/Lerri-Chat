@@ -122,10 +122,11 @@ O SFU **não decodifica vídeo** — só copia pacotes cifrados. Um **i5 de 8ª 
 ### 6.1 QUIC × controle de bitrate da mídia
 Datagramas QUIC **também passam pelo controle de congestionamento do QUIC**. Se o encoder mandar mais do que a janela do QUIC permite, os datagramas ficam na fila (latência) ou são descartados — e os dois controles brigam entre si. Regras:
 
-- Usar **BBR** no QUIC do iroh (menos sensível a perda isolada e não enche buffer como o Cubic). *Confirmar na Fase 3 se o iroh 1.x expõe a escolha do controlador.*
-- **Fila de envio de datagramas curta**: datagrama velho é descartado, nunca atrasado (melhor perder que enfileirar).
+- Usar **BBR** no QUIC do iroh (menos sensível a perda isolada e não enche buffer como o Cubic). *Confirmado na Fase 3: o iroh 1.3 aceita o controlador na `QuicTransportConfig`; todo endpoint usa o BBRv3 do `noq-proto`.*
+- **Fila de envio de datagramas curta**: datagrama velho é descartado, nunca atrasado (melhor perder que enfileirar). *Fase 3: 32 KiB por conexão, ~50 ms a 5 Mbps.*
 - **Controle de bitrate da mídia na aplicação**, com feedback do receptor (perda e atraso por número de sequência do cabeçalho SFrame) + RTT/janela do QUIC. O encoder é configurado **abaixo** da taxa que o QUIC estima disponível.
 - Prioridade quando falta banda: **voz > tela > câmera**.
+- *Fase 3 (só voz):* o encoder Opus se ajusta à perda medida na própria conexão QUIC a cada 2 s (32 kbps sem perda, 24 kbps acima de 5%, 20 kbps acima de 15%, com mais FEC quanto maior a perda). O feedback do receptor entra na Fase 4, onde o vídeo precisa dele; na voz, o buffer de jitter e o FEC do Opus já cobrem a perda do outro lado.
 
 ### 6.2 Simulcast (só modo servidor)
 Para que cada destinatário receba o que a conexão dele aguenta (codec em `SPEC-04`):
@@ -133,6 +134,16 @@ Para que cada destinatário receba o que a conexão dele aguenta (codec em `SPEC
 - Quem transmite tela/câmera envia **2–3 qualidades** (ex.: 1080p alto, 720p médio, 360p baixo).
 - O SFU encaminha, pra cada destinatário, a camada que cabe na banda dele, lendo a camada no cabeçalho SFrame em claro (`SPEC-02` §4.3).
 - No **x1 não há simulcast**: só existe um receptor, então o transmissor adapta o próprio bitrate direto.
+
+*Fase 4: simulcast ainda não existe.* No lugar dele, o relay pula quadros para quem está atrasado (§6.3), e cada um recebe o que a conexão aguenta com menos quadros por segundo, em vez de menos resolução.
+
+### 6.3 Tela em streams, não em datagramas (Fase 4)
+A voz continua em datagramas: um pacote perdido some e o PLC/FEC do Opus cobre. Vídeo é diferente. Um keyframe de tela 1080p tem 50–300 KB, centenas de pacotes. Em datagramas, 1% de perda já estragaria quase todo keyframe, e sem ele nada decodifica. Então:
+
+- **Um stream QUIC unidirecional por quadro** (como o Media over QUIC). O QUIC retransmite o que se perde, com o controle de congestionamento dele (BBR), e quadros em streams diferentes não se bloqueiam (sem head-of-line entre quadros). O conteúdo é `cabeçalho de roteamento (4 bytes) || SFrame(codec || bitstream)`; até 256 streams em paralelo por conexão, até 1 MiB por quadro.
+- **O relay lê o cabeçalho logo no início do stream** e repassa o quadro inteiro, num stream novo, a quem assiste. Streams terminam fora de ordem (um keyframe grande chega depois dos P-frames pequenos que vêm atrás dele); por isso, quando um keyframe *começa* a chegar, quem esperava por ele já passa a receber os quadros seguintes.
+- **Atraso não acumula:** com 8 quadros de tela (ou 4 de câmera, que perde antes: voz > tela > câmera) em trânsito para alguém (~130 ms a 60 fps), o relay pula os próximos para essa pessoa até um keyframe e pede um a quem compartilha (no máximo um pedido a cada 500 ms). Quem recebe reordena e, se um quadro não chega em 250 ms, pede keyframe também.
+- **Só para quem assiste:** o relay só repassa a tela ou a câmera de X para quem pediu aquele stream (`Watch`, com o tipo). A câmera (Fase 5) usa o mesmo caminho, com seu tipo no cabeçalho. Ele conta a quem compartilha quantos assistem; com zero, o transmissor nem codifica.
 
 ## 7. Portas e descoberta
 

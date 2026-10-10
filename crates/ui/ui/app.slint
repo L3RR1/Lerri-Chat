@@ -1,7 +1,7 @@
 // Interface mínima (SPEC-05): início, espera e sala com chat.
 // Só tokens da paleta; nenhuma animação.
 
-import { LineEdit, ScrollView, CheckBox, Palette } from "std-widgets.slint";
+import { LineEdit, ScrollView, CheckBox, ComboBox, Palette } from "std-widgets.slint";
 
 global Theme {
     out property <color> ink: #0B0710;
@@ -12,6 +12,7 @@ global Theme {
     out property <color> violet: #A855F7;
     out property <color> violet-bright: #C084FC;
     out property <color> violet-deep: #7C3AED;
+    out property <color> violet-glow: #A855F740;
     out property <color> text: #F4F0FA;
     out property <color> text-dim: #B3A7C9;
     out property <color> text-mute: #6E6384;
@@ -38,6 +39,12 @@ export struct MemberRow {
     owner: bool,
     me: bool,
     waiting: bool,
+    in-voice: bool,
+    speaking: bool,
+    sharing: bool,
+    watching: bool,
+    camera: bool,
+    watching-camera: bool,
 }
 
 component Btn inherits Rectangle {
@@ -100,6 +107,24 @@ component Dot inherits Rectangle {
     height: 8px;
     border-radius: 4px;
     background: tone;
+}
+
+// Presença na lista de membros: ponto de online; na voz, anel roxo estático
+// enquanto fala (SPEC-05: sem animação contínua no renderer software).
+component Presence inherits Rectangle {
+    in property <bool> online;
+    in property <bool> speaking;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    background: speaking ? Theme.violet-glow : transparent;
+    border-width: speaking ? 2px : 0px;
+    border-color: Theme.violet-bright;
+    Dot {
+        x: 3px;
+        y: 3px;
+        tone: root.online ? Theme.success : Theme.text-mute;
+    }
 }
 
 component HomeView inherits VerticalLayout {
@@ -248,12 +273,55 @@ component RoomView inherits HorizontalLayout {
     in-out property <string> chat-draft;
     in property <[MemberRow]> members;
     in property <[string]> log;
+    in property <bool> voice-active;
+    in property <bool> voice-muted;
+    in property <bool> voice-deafened;
+    in-out property <bool> voice-strong-ns;
+    in property <string> voice-devices;
     callback new-invite();
     callback copy-invite();
     callback send-chat();
     callback remove-member(int);
     callback disconnect();
     callback leave-room();
+    callback join-voice();
+    callback leave-voice();
+    callback toggle-mute();
+    callback toggle-deafen();
+    callback strong-ns-changed();
+    // Tela: a nossa e a que assistimos.
+    in property <bool> screen-sharing;
+    in property <string> screen-info;
+    in property <int> screen-watchers;
+    in property <bool> can-share;
+    in property <string> watch-problem;
+    in property <[string]> monitors;
+    in-out property <int> monitor-index;
+    in property <string> watching-label;
+    callback share-screen();
+    callback stop-screen();
+    callback watch-member(int);
+    callback unwatch();
+    // Câmera: a nossa e a que assistimos.
+    in property <bool> camera-on;
+    in property <string> camera-info;
+    in property <int> camera-watchers;
+    in property <[string]> cameras;
+    in-out property <int> camera-index;
+    in property <string> watching-cam-label;
+    callback start-camera();
+    callback stop-camera();
+    callback watch-camera(int);
+    callback unwatch-camera();
+    // Onde as janelas de vídeo (filhas, D3D11) ficam, em pixels lógicos.
+    out property <length> video-x: video-box.absolute-position.x;
+    out property <length> video-y: video-box.absolute-position.y;
+    out property <length> video-width: video-box.width;
+    out property <length> video-height: video-box.height;
+    out property <length> cam-x: cam-box.absolute-position.x;
+    out property <length> cam-y: cam-box.absolute-position.y;
+    out property <length> cam-width: cam-box.width;
+    out property <length> cam-height: cam-box.height;
 
     property <bool> confirm-leave;
     property <int> confirm-remove: -1;
@@ -382,6 +450,59 @@ component RoomView inherits HorizontalLayout {
             }
         }
 
+        // Vídeo assistido: tela à esquerda, câmera à direita. Cada imagem é
+        // uma janela-filha (D3D11) posta em cima da sua caixa; a UI não
+        // desenha nada ali. Sem nada assistido, altura zero.
+        Rectangle {
+            property <bool> any: root.watching-label != "" || root.watching-cam-label != "";
+            vertical-stretch: any ? 3 : 0;
+            max-height: any ? 100000px : 0px;
+            min-height: any ? 240px : 0px;
+            background: Theme.surface;
+            border-radius: 8px;
+            border-width: any ? 1px : 0px;
+            border-color: Theme.border;
+            clip: true;
+            HorizontalLayout {
+                visible: parent.any;
+                padding: 8px;
+                spacing: 8px;
+                VerticalLayout {
+                    horizontal-stretch: root.watching-label != "" ? 3 : 0;
+                    max-width: root.watching-label != "" ? 100000px : 0px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: "Tela de " + root.watching-label; color: Theme.text; font-weight: 600; vertical-alignment: center; overflow: elide; }
+                        Rectangle { }
+                        Btn { height: 28px; font-size: 12px; text: "Fechar"; clicked => { root.unwatch(); } }
+                    }
+                    video-box := Rectangle {
+                        vertical-stretch: 1;
+                        background: Theme.ink;
+                        Text { text: "Aguardando a imagem…"; color: Theme.text-mute; }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: root.watching-cam-label != "" ? 1 : 0;
+                    max-width: root.watching-cam-label != "" ? 100000px : 0px;
+                    min-width: root.watching-cam-label != "" ? 220px : 0px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: "Câmera de " + root.watching-cam-label; color: Theme.text; font-weight: 600; vertical-alignment: center; overflow: elide; }
+                        Rectangle { }
+                        Btn { height: 28px; font-size: 12px; text: "Fechar"; clicked => { root.unwatch-camera(); } }
+                    }
+                    cam-box := Rectangle {
+                        vertical-stretch: 1;
+                        background: Theme.ink;
+                        Text { text: "Aguardando a imagem…"; color: Theme.text-mute; }
+                    }
+                }
+            }
+        }
+
         Card {
             vertical-stretch: 1;
             VerticalLayout {
@@ -423,6 +544,103 @@ component RoomView inherits HorizontalLayout {
         width: 280px;
         spacing: 12px;
         Card {
+            border-color: root.voice-active ? Theme.violet : Theme.border;
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+                alignment: start;
+                HorizontalLayout {
+                    Text { text: "Voz"; color: Theme.text; font-weight: 600; vertical-alignment: center; }
+                    Rectangle { }
+                    Text {
+                        text: !root.voice-active ? "fora" : root.voice-deafened ? "ensurdecido" : root.voice-muted ? "mudo" : "conectado";
+                        color: !root.voice-active ? Theme.text-mute : (root.voice-deafened || root.voice-muted) ? Theme.warning : Theme.success;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+                if !root.voice-active: Btn {
+                    text: "Entrar na voz";
+                    primary: true;
+                    enabled: root.room-status == "";
+                    clicked => { root.join-voice(); }
+                }
+                if root.voice-active: HorizontalLayout {
+                    spacing: 6px;
+                    Btn { horizontal-stretch: 1; height: 30px; font-size: 13px; text: root.voice-muted ? "Ativar mic" : "Mudo"; enabled: !root.voice-deafened; clicked => { root.toggle-mute(); } }
+                    Btn { horizontal-stretch: 1; height: 30px; font-size: 13px; text: root.voice-deafened ? "Ouvir" : "Ensurdecer"; clicked => { root.toggle-deafen(); } }
+                    Btn { horizontal-stretch: 1; height: 30px; font-size: 13px; text: "Sair"; danger: true; clicked => { root.leave-voice(); } }
+                }
+                CheckBox {
+                    text: "Supressão forte de ruído";
+                    checked <=> root.voice-strong-ns;
+                    toggled => { root.strong-ns-changed(); }
+                }
+                if root.voice-devices != "": Text { text: root.voice-devices; color: Theme.text-mute; font-size: 11px; wrap: word-wrap; }
+            }
+        }
+        Card {
+            border-color: root.screen-sharing ? Theme.violet : Theme.border;
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+                alignment: start;
+                HorizontalLayout {
+                    Text { text: "Tela"; color: Theme.text; font-weight: 600; vertical-alignment: center; }
+                    Rectangle { }
+                    Text {
+                        text: !root.screen-sharing ? "" : root.screen-watchers == 0 ? "no ar · ninguém assistindo" : root.screen-watchers == 1 ? "no ar · 1 assistindo" : "no ar · " + root.screen-watchers + " assistindo";
+                        color: Theme.success;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+                if !root.screen-sharing && root.monitors.length > 1: ComboBox {
+                    model: root.monitors;
+                    current-index <=> root.monitor-index;
+                }
+                if !root.screen-sharing: Btn {
+                    text: "Compartilhar tela";
+                    primary: true;
+                    enabled: root.room-status == "" && root.can-share;
+                    clicked => { root.share-screen(); }
+                }
+                if root.screen-sharing: Btn { text: "Parar de compartilhar"; danger: true; clicked => { root.stop-screen(); } }
+                if root.screen-info != "": Text { text: root.screen-info; color: Theme.text-mute; font-size: 11px; wrap: word-wrap; }
+                if root.watch-problem != "": Text { text: "Para assistir: " + root.watch-problem; color: Theme.warning; font-size: 11px; wrap: word-wrap; }
+            }
+        }
+        Card {
+            border-color: root.camera-on ? Theme.violet : Theme.border;
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+                alignment: start;
+                HorizontalLayout {
+                    Text { text: "Câmera"; color: Theme.text; font-weight: 600; vertical-alignment: center; }
+                    Rectangle { }
+                    Text {
+                        text: !root.camera-on ? "" : root.camera-watchers == 0 ? "ligada · ninguém vendo" : root.camera-watchers == 1 ? "ligada · 1 vendo" : "ligada · " + root.camera-watchers + " vendo";
+                        color: Theme.success;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+                if !root.camera-on && root.cameras.length > 1: ComboBox {
+                    model: root.cameras;
+                    current-index <=> root.camera-index;
+                }
+                if !root.camera-on: Btn {
+                    text: root.cameras.length == 0 ? "Nenhuma câmera" : "Ligar câmera";
+                    primary: true;
+                    enabled: root.room-status == "" && root.can-share && root.cameras.length > 0;
+                    clicked => { root.start-camera(); }
+                }
+                if root.camera-on: Btn { text: "Desligar câmera"; danger: true; clicked => { root.stop-camera(); } }
+                if root.camera-info != "": Text { text: root.camera-info; color: Theme.text-mute; font-size: 11px; wrap: word-wrap; }
+            }
+        }
+        Card {
             VerticalLayout {
                 padding: 14px;
                 spacing: 8px;
@@ -430,17 +648,38 @@ component RoomView inherits HorizontalLayout {
                 Text { text: "Membros"; color: Theme.text; font-weight: 600; }
                 for m[i] in root.members: HorizontalLayout {
                     spacing: 8px;
-                    VerticalLayout { alignment: center; Dot { tone: m.online ? Theme.success : Theme.text-mute; } }
+                    VerticalLayout { alignment: center; Presence { online: m.online; speaking: m.speaking; } }
                     VerticalLayout {
                         alignment: center;
                         Text { text: m.label; color: m.online ? Theme.text : Theme.text-dim; overflow: elide; }
-                        if m.owner || m.waiting: Text {
-                            text: m.owner ? "dono" : "aguardando admissão";
-                            color: m.owner ? Theme.violet-bright : Theme.warning;
+                        if m.owner || m.waiting || m.in-voice || m.sharing || m.camera: Text {
+                            text: (m.owner ? "dono" : m.waiting ? "aguardando admissão" : "")
+                                + (m.in-voice ? ((m.owner || m.waiting) ? " · " : "") + (m.speaking ? "falando" : "na voz") : "")
+                                + (m.sharing ? ((m.owner || m.waiting || m.in-voice) ? " · " : "") + "compartilhando" : "")
+                                + (m.camera ? ((m.owner || m.waiting || m.in-voice || m.sharing) ? " · " : "") + "câmera" : "");
+                            color: m.speaking ? Theme.violet-bright : m.waiting ? Theme.warning : m.owner ? Theme.violet-bright : Theme.text-dim;
                             font-size: 11px;
                         }
                     }
                     Rectangle { }
+                    if m.sharing && !m.me && root.watch-problem == "": Btn {
+                        height: 26px;
+                        font-size: 12px;
+                        text: m.watching ? "Fechar" : "Assistir";
+                        primary: !m.watching;
+                        clicked => {
+                            if (m.watching) { root.unwatch(); } else { root.watch-member(i); }
+                        }
+                    }
+                    if m.camera && !m.me && root.watch-problem == "": Btn {
+                        height: 26px;
+                        font-size: 12px;
+                        text: m.watching-camera ? "Fechar" : "Câmera";
+                        primary: !m.watching-camera;
+                        clicked => {
+                            if (m.watching-camera) { root.unwatch-camera(); } else { root.watch-camera(i); }
+                        }
+                    }
                     if root.is-owner && !m.me && !m.waiting: Btn {
                         height: 26px;
                         font-size: 12px;
@@ -510,6 +749,33 @@ export component AppWindow inherits Window {
     in-out property <string> chat-draft;
     in property <[MemberRow]> members;
     in property <[string]> log;
+    in property <bool> voice-active;
+    in property <bool> voice-muted;
+    in property <bool> voice-deafened;
+    in-out property <bool> voice-strong-ns;
+    in property <string> voice-devices;
+    in property <bool> screen-sharing;
+    in property <string> screen-info;
+    in property <int> screen-watchers;
+    in property <bool> can-share;
+    in property <string> watch-problem;
+    in property <[string]> monitors;
+    in-out property <int> monitor-index;
+    in property <string> watching-label;
+    out property <length> video-x: room-view.video-x;
+    out property <length> video-y: room-view.video-y;
+    out property <length> video-width: room-view.video-width;
+    out property <length> video-height: room-view.video-height;
+    in property <bool> camera-on;
+    in property <string> camera-info;
+    in property <int> camera-watchers;
+    in property <[string]> cameras;
+    in-out property <int> camera-index;
+    in property <string> watching-cam-label;
+    out property <length> cam-x: room-view.cam-x;
+    out property <length> cam-y: room-view.cam-y;
+    out property <length> cam-width: room-view.cam-width;
+    out property <length> cam-height: room-view.cam-height;
 
     callback join();
     callback create-x1();
@@ -522,6 +788,19 @@ export component AppWindow inherits Window {
     callback remove-member(int);
     callback disconnect();
     callback leave-room();
+    callback join-voice();
+    callback leave-voice();
+    callback toggle-mute();
+    callback toggle-deafen();
+    callback strong-ns-changed();
+    callback share-screen();
+    callback stop-screen();
+    callback watch-member(int);
+    callback unwatch();
+    callback start-camera();
+    callback stop-camera();
+    callback watch-camera(int);
+    callback unwatch-camera();
     callback scroll-chat-to-end();
     scroll-chat-to-end => { room-view.scroll-to-end(); }
 
@@ -592,6 +871,38 @@ export component AppWindow inherits Window {
                 chat-draft <=> root.chat-draft;
                 members: root.members;
                 log: root.log;
+                voice-active: root.voice-active;
+                voice-muted: root.voice-muted;
+                voice-deafened: root.voice-deafened;
+                voice-strong-ns <=> root.voice-strong-ns;
+                voice-devices: root.voice-devices;
+                screen-sharing: root.screen-sharing;
+                screen-info: root.screen-info;
+                screen-watchers: root.screen-watchers;
+                can-share: root.can-share;
+                watch-problem: root.watch-problem;
+                monitors: root.monitors;
+                monitor-index <=> root.monitor-index;
+                watching-label: root.watching-label;
+                camera-on: root.camera-on;
+                camera-info: root.camera-info;
+                camera-watchers: root.camera-watchers;
+                cameras: root.cameras;
+                camera-index <=> root.camera-index;
+                watching-cam-label: root.watching-cam-label;
+                join-voice => { root.join-voice(); }
+                leave-voice => { root.leave-voice(); }
+                toggle-mute => { root.toggle-mute(); }
+                toggle-deafen => { root.toggle-deafen(); }
+                strong-ns-changed => { root.strong-ns-changed(); }
+                share-screen => { root.share-screen(); }
+                stop-screen => { root.stop-screen(); }
+                watch-member(i) => { root.watch-member(i); }
+                unwatch => { root.unwatch(); }
+                start-camera => { root.start-camera(); }
+                stop-camera => { root.stop-camera(); }
+                watch-camera(i) => { root.watch-camera(i); }
+                unwatch-camera => { root.unwatch-camera(); }
                 new-invite => { root.new-invite(); }
                 copy-invite => { root.copy-invite(); }
                 send-chat => { root.send-chat(); }

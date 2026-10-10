@@ -7,6 +7,7 @@
 mod clipboard;
 mod clock;
 mod qr;
+mod video;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -15,7 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use lerri_client::room::{self, ChatLine, Command, Exit, MemberView, OpenHow, RoomCore, RoomEvent};
+use lerri_client::room::{self, ChatLine, Command, Exit, MemberView, OpenHow, PublishSource, RoomCore, RoomEvent, WatchTarget};
+use lerri_core::media::Video;
 use lerri_client::rooms::{self, SavedRoom};
 use lerri_client::settings::{Settings, clean_nick};
 use lerri_client::{ReachReport, Session};
@@ -53,6 +55,8 @@ struct App {
     saved: RefCell<Vec<SavedRoom>>,
     /// Membros mostrados agora (para o botão "Remover" achar o id).
     members: Arc<Mutex<Vec<MemberView>>>,
+    /// O que estamos assistindo (para os botões "Fechar" acharem o membro).
+    watching: Arc<Mutex<Vec<(MemberId, Video)>>>,
 }
 
 /// Abre a janela e só volta quando ela for fechada. `initial_link`: convite
@@ -65,6 +69,7 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     let settings = Settings::load(&data_dir);
     ui.set_nickname(settings.nickname.into());
     ui.set_keep_history(settings.keep_history);
+    ui.set_voice_strong_ns(settings.strong_ns);
 
     let app = Rc::new(App {
         rt: rt.handle().clone(),
@@ -74,6 +79,7 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         room: RefCell::new(None),
         saved: RefCell::new(Vec::new()),
         members: Arc::default(),
+        watching: Arc::default(),
     });
     app.refresh_saved();
 
@@ -124,6 +130,59 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     let a = app.clone();
     ui.on_leave_room(move || a.send(Command::LeaveRoom));
     let a = app.clone();
+    ui.on_join_voice(move || a.send(Command::JoinVoice { devices: true }));
+    let a = app.clone();
+    ui.on_leave_voice(move || a.send(Command::LeaveVoice));
+    let a = app.clone();
+    ui.on_toggle_mute(move || {
+        let muted = a.ui().get_voice_muted();
+        a.send(Command::Mute(!muted));
+    });
+    let a = app.clone();
+    ui.on_toggle_deafen(move || {
+        let deaf = a.ui().get_voice_deafened();
+        a.send(Command::Deafen(!deaf));
+    });
+    let a = app.clone();
+    ui.on_strong_ns_changed(move || {
+        let on = a.ui().get_voice_strong_ns();
+        a.send(Command::StrongNoiseSuppression(on));
+        a.save_settings();
+    });
+    let a = app.clone();
+    ui.on_share_screen(move || {
+        let monitor = video::monitor(a.ui().get_monitor_index().max(0) as usize);
+        a.send(Command::Publish { source: PublishSource::Screen { monitor }, gpu: true });
+    });
+    let a = app.clone();
+    ui.on_stop_screen(move || a.send(Command::Unpublish(Video::Screen)));
+    let a = app.clone();
+    ui.on_start_camera(move || {
+        let device = video::camera(a.ui().get_camera_index().max(0) as usize);
+        a.send(Command::Publish { source: PublishSource::Camera { device }, gpu: true });
+    });
+    let a = app.clone();
+    ui.on_stop_camera(move || a.send(Command::Unpublish(Video::Camera)));
+    let a = app.clone();
+    ui.on_watch_member(move |i| a.watch(i as usize, Video::Screen));
+    let a = app.clone();
+    ui.on_watch_camera(move |i| a.watch(i as usize, Video::Camera));
+    let a = app.clone();
+    ui.on_unwatch(move || a.unwatch(Video::Screen));
+    let a = app.clone();
+    ui.on_unwatch_camera(move || a.unwatch(Video::Camera));
+    // As janelas-filhas de vídeo acompanham suas áreas na tela da sala.
+    let a = app.clone();
+    let follow = slint::Timer::default();
+    follow.start(slint::TimerMode::Repeated, Duration::from_millis(150), move || {
+        for change in video::follow(&a.ui()) {
+            match change {
+                video::Change::Resized { window, size } => a.send(Command::VideoResize { window, size }),
+                video::Change::Minimized(min) => a.send(Command::PauseVideo(min)),
+            }
+        }
+    });
+    let a = app.clone();
     ui.on_copy_invite(move || {
         let ui = a.ui();
         let status = match clipboard::set_text(&ui.get_invite_link()) {
@@ -157,6 +216,35 @@ impl App {
         self.ui.upgrade().expect("janela existe enquanto o event loop roda")
     }
 
+    /// Assiste à tela ou à câmera do membro `i` da lista: mostra a área no
+    /// painel, espera o layout e põe a janela-filha em cima dela.
+    fn watch(self: &Rc<Self>, i: usize, video: Video) {
+        let Some(m) = self.members.lock().unwrap().get(i).cloned() else { return };
+        // Se já mostrava outro do mesmo tipo, a sala troca e devolve a janela
+        // antiga (VideoClosed), que não é mais a registrada para o tipo.
+        set_watching_label(&self.ui(), video, m.label());
+        let app = self.clone();
+        slint::Timer::single_shot(Duration::from_millis(80), move || {
+            let ui = app.ui();
+            match video::open(&ui, video) {
+                Ok((hwnd, size)) => {
+                    app.send(Command::Watch { member: m.id, video, target: WatchTarget::Window { hwnd, size } })
+                }
+                Err(e) => {
+                    set_watching_label(&ui, video, String::new());
+                    ui.set_error_text(format!("não deu para abrir o vídeo: {e:#}").into());
+                }
+            }
+        });
+    }
+
+    fn unwatch(&self, video: Video) {
+        let member = self.watching.lock().unwrap().iter().find(|(_, v)| *v == video).map(|(m, _)| *m);
+        if let Some(member) = member {
+            self.send(Command::Unwatch { member, video });
+        }
+    }
+
     fn send(&self, cmd: Command) {
         if let Some(room) = self.room.borrow().as_ref() {
             let _ = room.cmds.send(cmd);
@@ -167,7 +255,7 @@ impl App {
         let ui = self.ui();
         let nick = clean_nick(&ui.get_nickname());
         ui.set_nickname(nick.clone().into());
-        let settings = Settings { nickname: nick, keep_history: ui.get_keep_history() };
+        let settings = Settings { nickname: nick, keep_history: ui.get_keep_history(), strong_ns: ui.get_voice_strong_ns() };
         if let Err(e) = settings.save(&self.data_dir) {
             ui.set_error_text(format!("não deu para salvar as preferências: {e:#}").into());
         }
@@ -203,11 +291,16 @@ impl App {
         let (done_tx, done) = oneshot::channel();
         *self.room.borrow_mut() = Some(ActiveRoom { cmds, done });
 
-        let (weak, identity, data_dir, members) =
-            (self.ui.clone(), self.identity.clone(), self.data_dir.clone(), self.members.clone());
+        let (weak, identity, data_dir, members, watching) = (
+            self.ui.clone(),
+            self.identity.clone(),
+            self.data_dir.clone(),
+            self.members.clone(),
+            self.watching.clone(),
+        );
         self.rt.spawn(async move {
             let error = match open_room(start, &identity, &data_dir, &weak).await {
-                Ok(ctx) => match run_room(ctx, rx, &weak, &data_dir, members).await {
+                Ok(ctx) => match run_room(ctx, rx, &weak, &data_dir, members, watching).await {
                     Exit::Closed | Exit::Left => None,
                     Exit::Removed => Some("Você foi removido da sala pelo dono.".to_string()),
                     Exit::Disconnected(reason) => Some(disconnect_reason(&reason)),
@@ -216,6 +309,14 @@ impl App {
             };
             let _ = weak.upgrade_in_event_loop(move |ui| {
                 ui.set_screen("home".into());
+                ui.set_voice_active(false);
+                ui.set_voice_devices("".into());
+                ui.set_screen_sharing(false);
+                ui.set_screen_info("".into());
+                ui.set_watching_label("".into());
+                ui.set_camera_on(false);
+                ui.set_camera_info("".into());
+                ui.set_watching_cam_label("".into());
                 if let Some(e) = error {
                     ui.set_error_text(e.into());
                 }
@@ -342,6 +443,8 @@ fn saved(session: &Session, host: &HostAddr) -> SavedRoom {
 struct View {
     me: Option<MemberId>,
     members: Vec<MemberView>,
+    /// Telas e câmeras assistidas agora.
+    watching: Vec<(MemberId, Video)>,
     chat: Vec<ChatLine>,
     log: Vec<SharedString>,
 }
@@ -361,6 +464,7 @@ async fn run_room(
     ui: &Weak<AppWindow>,
     data_dir: &std::path::Path,
     shared_members: Arc<Mutex<Vec<MemberView>>>,
+    shared_watching: Arc<Mutex<Vec<(MemberId, Video)>>>,
 ) -> Exit {
     let RoomCtx { session, core, x1, invite_host, first_invite, reach } = ctx;
     {
@@ -412,6 +516,65 @@ async fn run_room(
                 return;
             }
             RoomEvent::Invite(inv) => return show_invite(&w1, &inv),
+            RoomEvent::Voice(voice) => {
+                let _ = w1.upgrade_in_event_loop(move |ui| {
+                    ui.set_voice_active(voice.active);
+                    ui.set_voice_muted(voice.muted);
+                    ui.set_voice_deafened(voice.deafened);
+                    ui.set_voice_strong_ns(voice.strong_ns);
+                    ui.set_voice_devices(voice.devices.unwrap_or_default().into());
+                });
+                return;
+            }
+            // Só para testes (mídia sem dispositivos).
+            RoomEvent::VoiceHandle(_) | RoomEvent::OutgoingHandle { .. } | RoomEvent::KeyframeRequested { .. } => return,
+            RoomEvent::Video(info) => {
+                let _ = w1.upgrade_in_event_loop(move |ui| {
+                    video::set_devices(
+                        info.monitors.iter().map(|(h, _)| *h).collect(),
+                        info.cameras.iter().map(|(id, _)| id.clone()).collect(),
+                    );
+                    let names: Vec<SharedString> = info.monitors.iter().map(|(_, n)| n.clone().into()).collect();
+                    ui.set_monitors(ModelRc::new(VecModel::from(names)));
+                    ui.set_monitor_index(0);
+                    let cams: Vec<SharedString> = info.cameras.iter().map(|(_, n)| n.clone().into()).collect();
+                    ui.set_cameras(ModelRc::new(VecModel::from(cams)));
+                    ui.set_camera_index(0);
+                    ui.set_can_share(info.can_encode && !info.monitors.is_empty());
+                    ui.set_watch_problem(info.watch_problem.unwrap_or_default().into());
+                });
+                return;
+            }
+            RoomEvent::VideoClosed { window } => {
+                let _ = w1.upgrade_in_event_loop(move |ui| {
+                    if let Some(video) = video::closed(window) {
+                        set_watching_label(&ui, video, String::new());
+                    }
+                });
+                return;
+            }
+            RoomEvent::Stream { video, view } => {
+                let on = view.sharing.is_some();
+                let info = view.sharing.unwrap_or_default();
+                let watchers = view.watchers as i32;
+                let _ = w1.upgrade_in_event_loop(move |ui| match video {
+                    Video::Screen => {
+                        ui.set_screen_sharing(on);
+                        ui.set_screen_info(info.into());
+                        ui.set_screen_watchers(watchers);
+                    }
+                    Video::Camera => {
+                        ui.set_camera_on(on);
+                        ui.set_camera_info(info.into());
+                        ui.set_camera_watchers(watchers);
+                    }
+                });
+                return;
+            }
+            RoomEvent::Watching(list) => {
+                *shared_watching.lock().unwrap() = list.clone();
+                v.watching = list;
+            }
             RoomEvent::Members(m) => {
                 *shared_members.lock().unwrap() = m.clone();
                 v.members = m;
@@ -468,6 +631,12 @@ fn push_view(ui: &Weak<AppWindow>, v: &View) {
             owner: m.owner,
             me: m.me,
             waiting: m.waiting,
+            in_voice: m.in_voice,
+            speaking: m.speaking,
+            sharing: m.sharing,
+            watching: v.watching.contains(&(m.id, Video::Screen)),
+            camera: m.camera,
+            watching_camera: v.watching.contains(&(m.id, Video::Camera)),
         })
         .collect();
     // Mais recente primeiro: o quadro de atividade é pequeno.
@@ -487,6 +656,14 @@ fn push_view(ui: &Weak<AppWindow>, v: &View) {
             });
         }
     });
+}
+
+/// Nome no topo da área de vídeo do tipo; vazio esconde a área.
+fn set_watching_label(ui: &AppWindow, video: Video, label: String) {
+    match video {
+        Video::Screen => ui.set_watching_label(label.into()),
+        Video::Camera => ui.set_watching_cam_label(label.into()),
+    }
 }
 
 fn show_invite(ui: &Weak<AppWindow>, invite: &Invite) {

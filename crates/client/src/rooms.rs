@@ -42,6 +42,17 @@ pub fn remember(data_dir: &Path, room: SavedRoom) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Tira a sala da lista (saiu ou foi removido).
+pub fn forget(data_dir: &Path, room: RoomId) -> anyhow::Result<()> {
+    let mut all = load(data_dir)?;
+    let before = all.len();
+    all.retain(|r| r.room != room);
+    if all.len() != before {
+        secret_store::save(&data_dir.join(FILE_NAME), PURPOSE, &postcard::to_allocvec(&all)?)?;
+    }
+    Ok(())
+}
+
 /// Procura por prefixo do id em hexadecimal.
 pub fn find(data_dir: &Path, prefix: &str) -> anyhow::Result<SavedRoom> {
     let prefix = prefix.to_ascii_lowercase();

@@ -1,23 +1,26 @@
 //! Interface gráfica (SPEC-05, D-02: Slint com renderer software).
 //!
 //! A janela roda na thread principal; rede e salas rodam num runtime tokio à
-//! parte. A tarefa da sala manda atualizações para a janela com
-//! `upgrade_in_event_loop` e recebe comandos (novo convite, sair) por canal.
+//! parte. A sala ([`lerri_client::room::run`]) manda eventos para a janela
+//! com `upgrade_in_event_loop` e recebe comandos por canal.
 
 mod clipboard;
+mod clock;
 mod qr;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use lerri_client::room::{self, ChatLine, Command, Exit, MemberView, OpenHow, RoomCore, RoomEvent};
 use lerri_client::rooms::{self, SavedRoom};
-use lerri_client::{Event, Session};
+use lerri_client::settings::{Settings, clean_nick};
+use lerri_client::{ReachReport, Session};
 use lerri_core::invite::{DEFAULT_INVITE_TTL_SECS, HostAddr, Invite, Link};
-use lerri_core::protocol::{Auth, Role, RoomMode};
+use lerri_core::protocol::{Role, RoomMode};
 use lerri_core::{MemberId, unix_now};
 use lerri_crypto::Identity;
 use lerri_host::X1Host;
@@ -36,13 +39,8 @@ enum Start {
     Open(SavedRoom),
 }
 
-enum RoomCmd {
-    NewInvite,
-    Leave,
-}
-
 struct ActiveRoom {
-    cmds: mpsc::UnboundedSender<RoomCmd>,
+    cmds: mpsc::UnboundedSender<Command>,
     done: oneshot::Receiver<()>,
 }
 
@@ -53,6 +51,8 @@ struct App {
     ui: Weak<AppWindow>,
     room: RefCell<Option<ActiveRoom>>,
     saved: RefCell<Vec<SavedRoom>>,
+    /// Membros mostrados agora (para o botão "Remover" achar o id).
+    members: Arc<Mutex<Vec<MemberView>>>,
 }
 
 /// Abre a janela e só volta quando ela for fechada. `initial_link`: convite
@@ -62,6 +62,9 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     let (identity, _) = Identity::load_or_create(&data_dir)?;
     let ui = AppWindow::new()?;
     ui.set_my_id(identity.member_id().short().into());
+    let settings = Settings::load(&data_dir);
+    ui.set_nickname(settings.nickname.into());
+    ui.set_keep_history(settings.keep_history);
 
     let app = Rc::new(App {
         rt: rt.handle().clone(),
@@ -70,6 +73,7 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         ui: ui.as_weak(),
         room: RefCell::new(None),
         saved: RefCell::new(Vec::new()),
+        members: Arc::default(),
     });
     app.refresh_saved();
 
@@ -96,9 +100,29 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         }
     });
     let a = app.clone();
-    ui.on_new_invite(move || a.send(RoomCmd::NewInvite));
+    ui.on_save_settings(move || a.save_settings());
     let a = app.clone();
-    ui.on_leave(move || a.send(RoomCmd::Leave));
+    ui.on_new_invite(move || a.send(Command::NewInvite));
+    let a = app.clone();
+    ui.on_send_chat(move || {
+        let ui = a.ui();
+        let text = ui.get_chat_draft().to_string();
+        if !text.trim().is_empty() {
+            a.send(Command::Send(text));
+            ui.set_chat_draft("".into());
+        }
+    });
+    let a = app.clone();
+    ui.on_remove_member(move |i| {
+        let id = a.members.lock().unwrap().get(i as usize).map(|m| m.id);
+        if let Some(id) = id {
+            a.send(Command::Remove(id));
+        }
+    });
+    let a = app.clone();
+    ui.on_disconnect(move || a.send(Command::Close));
+    let a = app.clone();
+    ui.on_leave_room(move || a.send(Command::LeaveRoom));
     let a = app.clone();
     ui.on_copy_invite(move || {
         let ui = a.ui();
@@ -116,10 +140,10 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
 
     ui.run()?;
 
-    // Janela fechada: sai da sala com educação antes de derrubar o runtime.
+    // Janela fechada: desconecta com educação antes de derrubar o runtime.
     if let Some(room) = app.room.borrow_mut().take() {
-        let _ = room.cmds.send(RoomCmd::Leave);
-        let _ = rt.block_on(async { tokio::time::timeout(Duration::from_secs(3), room.done).await });
+        let _ = room.cmds.send(Command::Close);
+        let _ = rt.block_on(async { tokio::time::timeout(Duration::from_secs(4), room.done).await });
     }
     // Os callbacks da janela seguram o `App`, então o runtime não seria
     // derrubado sozinho; com threads de rede vivas, a saída do processo
@@ -133,9 +157,19 @@ impl App {
         self.ui.upgrade().expect("janela existe enquanto o event loop roda")
     }
 
-    fn send(&self, cmd: RoomCmd) {
+    fn send(&self, cmd: Command) {
         if let Some(room) = self.room.borrow().as_ref() {
             let _ = room.cmds.send(cmd);
+        }
+    }
+
+    fn save_settings(&self) {
+        let ui = self.ui();
+        let nick = clean_nick(&ui.get_nickname());
+        ui.set_nickname(nick.clone().into());
+        let settings = Settings { nickname: nick, keep_history: ui.get_keep_history() };
+        if let Err(e) = settings.save(&self.data_dir) {
+            ui.set_error_text(format!("não deu para salvar as preferências: {e:#}").into());
         }
     }
 
@@ -159,6 +193,7 @@ impl App {
         if self.room.borrow().is_some() {
             return;
         }
+        self.save_settings();
         let ui = self.ui();
         ui.set_error_text("".into());
         ui.set_busy_text(busy.into());
@@ -168,13 +203,17 @@ impl App {
         let (done_tx, done) = oneshot::channel();
         *self.room.borrow_mut() = Some(ActiveRoom { cmds, done });
 
-        let (weak, identity, data_dir) = (self.ui.clone(), self.identity.clone(), self.data_dir.clone());
+        let (weak, identity, data_dir, members) =
+            (self.ui.clone(), self.identity.clone(), self.data_dir.clone(), self.members.clone());
         self.rt.spawn(async move {
-            let result = match open_room(start, &identity, &data_dir, &weak).await {
-                Ok(ctx) => room_task(ctx, rx, &weak).await,
-                Err(e) => Err(e),
+            let error = match open_room(start, &identity, &data_dir, &weak).await {
+                Ok(ctx) => match run_room(ctx, rx, &weak, &data_dir, members).await {
+                    Exit::Closed | Exit::Left => None,
+                    Exit::Removed => Some("Você foi removido da sala pelo dono.".to_string()),
+                    Exit::Disconnected(reason) => Some(disconnect_reason(&reason)),
+                },
+                Err(e) => Some(explain(&e)),
             };
-            let error = result.err().map(|e| explain(&e));
             let _ = weak.upgrade_in_event_loop(move |ui| {
                 ui.set_screen("home".into());
                 if let Some(e) = error {
@@ -203,20 +242,29 @@ impl App {
     }
 }
 
+fn disconnect_reason(reason: &str) -> String {
+    if reason.contains("closed by peer") || reason.contains("encerrou") {
+        "Você saiu da sala: o host encerrou a conexão (numa sala x1, quem criou fechou o app).".into()
+    } else {
+        format!("Você saiu da sala: conexão perdida ({reason}).")
+    }
+}
+
 struct RoomCtx {
     session: Session,
+    core: RoomCore,
     x1: Option<X1Host>,
     /// Endereço que vai nos convites (só o dono emite).
     invite_host: Option<HostAddr>,
     first_invite: Option<Invite>,
-    reach: Option<lerri_client::ReachReport>,
+    reach: Option<ReachReport>,
 }
 
 async fn open_room(start: Start, identity: &Identity, data_dir: &std::path::Path, ui: &Weak<AppWindow>) -> anyhow::Result<RoomCtx> {
     let busy = |text: &'static str| {
         let _ = ui.upgrade_in_event_loop(move |ui| ui.set_busy_text(text.into()));
     };
-    match start {
+    let mut ctx = match start {
         Start::Join(link) => {
             let Link::Join(invite) = Link::parse(&link).context("link inválido")? else {
                 bail!("este link não é um convite de sala")
@@ -224,27 +272,28 @@ async fn open_room(start: Start, identity: &Identity, data_dir: &std::path::Path
             if invite.expires_at <= unix_now() {
                 bail!("este convite expirou; peça outro a quem convidou");
             }
-            let session =
-                Session::connect(identity, &invite.host, Auth::Join { room: invite.room, token: invite.token }).await?;
+            let how = OpenHow::Join { room: invite.room, token: invite.token, secret: invite.secret.clone() };
+            let (session, core) = room::open(identity, data_dir, &invite.host, how).await?;
             if session.mode == RoomMode::Server {
                 rooms::remember(data_dir, saved(&session, &invite.host))?;
             }
-            Ok(RoomCtx { session, x1: None, invite_host: None, first_invite: None, reach: None })
+            RoomCtx { session, core, x1: None, invite_host: None, first_invite: None, reach: None }
         }
         Start::Open(room) => {
-            let session = Session::connect(identity, &room.host, Auth::Rejoin { room: room.room }).await?;
+            let how = OpenHow::Rejoin { room: room.room, mode: room.mode };
+            let (session, core) = room::open(identity, data_dir, &room.host, how).await?;
             let invite_host = (session.role == Role::Owner).then_some(room.host);
-            Ok(RoomCtx { session, x1: None, invite_host, first_invite: None, reach: None })
+            RoomCtx { session, core, x1: None, invite_host, first_invite: None, reach: None }
         }
         Start::CreateServer(link) => {
             let Link::Relay(relay) = Link::parse(&link).context("link inválido")? else {
                 bail!("use o link de administração do relay")
             };
             let admin = relay.admin.context("este é o link público do relay; criar sala exige o link de administração")?;
-            let session = Session::connect(identity, &relay.host, Auth::CreateRoom { admin, mode: RoomMode::Server }).await?;
+            let how = OpenHow::Create { admin, mode: RoomMode::Server };
+            let (session, core) = room::open(identity, data_dir, &relay.host, how).await?;
             rooms::remember(data_dir, saved(&session, &relay.host))?;
-            let first_invite = Some(session.issue_invite(&relay.host, DEFAULT_INVITE_TTL_SECS).await?);
-            Ok(RoomCtx { session, x1: None, invite_host: Some(relay.host), first_invite, reach: None })
+            RoomCtx { session, core, x1: None, invite_host: Some(relay.host), first_invite: None, reach: None }
         }
         Start::X1 { via } => {
             let meet = match via {
@@ -260,47 +309,67 @@ async fn open_room(start: Start, identity: &Identity, data_dir: &std::path::Path
             let host = X1Host::start(meet, 0).await?;
             let (public, classified) = host.host_addr().await;
             busy("Criando a sala…");
-            let session = Session::connect(
-                identity,
-                &host.loopback_addr(),
-                Auth::CreateRoom { admin: host.admin(), mode: RoomMode::X1 },
-            )
-            .await?;
-            let first_invite = Some(session.issue_invite(&public, DEFAULT_INVITE_TTL_SECS).await?);
-            Ok(RoomCtx {
+            let how = OpenHow::Create { admin: host.admin(), mode: RoomMode::X1 };
+            let (session, core) = room::open(identity, data_dir, &host.loopback_addr(), how).await?;
+            RoomCtx {
                 session,
+                core,
                 x1: Some(host),
                 invite_host: Some(public),
-                first_invite,
+                first_invite: None,
                 reach: Some(lerri_client::reach_report(&classified, assisted)),
-            })
+            }
         }
+    };
+    // Quem cria a sala já sai com um convite na tela.
+    if ctx.core.is_owner()
+        && ctx.core.epoch() == 0
+        && let Some(host) = &ctx.invite_host
+    {
+        let inv = ctx.session.issue_invite(host, DEFAULT_INVITE_TTL_SECS).await?;
+        ctx.core.share_invite(&inv);
+        ctx.first_invite = Some(inv);
     }
+    Ok(ctx)
 }
 
 fn saved(session: &Session, host: &HostAddr) -> SavedRoom {
     SavedRoom { room: session.room, host: host.clone(), mode: session.mode, role: session.role }
 }
 
-async fn room_task(ctx: RoomCtx, mut cmds: mpsc::UnboundedReceiver<RoomCmd>, ui: &Weak<AppWindow>) -> anyhow::Result<()> {
-    let RoomCtx { mut session, x1, invite_host, first_invite, reach } = ctx;
-    let me = session.me;
-    let mut online: Vec<MemberId> = session.online.clone();
-    let mut log: Vec<SharedString> = Vec::new();
-    let push = |log: &mut Vec<SharedString>, line: String| {
-        log.push(line.into());
-        if log.len() > LOG_LINES {
-            log.remove(0);
-        }
-    };
-    push(&mut log, "Você entrou na sala.".into());
+/// O que a janela mostra da sala, montado a partir dos eventos.
+#[derive(Default)]
+struct View {
+    me: Option<MemberId>,
+    members: Vec<MemberView>,
+    chat: Vec<ChatLine>,
+    log: Vec<SharedString>,
+}
 
+impl View {
+    fn name(&self, id: MemberId) -> String {
+        if Some(id) == self.me {
+            return "você".into();
+        }
+        self.members.iter().find(|m| m.id == id).map_or_else(|| format!("{}…", &id.short()[..8]), MemberView::label)
+    }
+}
+
+async fn run_room(
+    ctx: RoomCtx,
+    cmds: mpsc::UnboundedReceiver<Command>,
+    ui: &Weak<AppWindow>,
+    data_dir: &std::path::Path,
+    shared_members: Arc<Mutex<Vec<MemberView>>>,
+) -> Exit {
+    let RoomCtx { session, core, x1, invite_host, first_invite, reach } = ctx;
     {
         let room_id = session.room.to_string();
         let mode = if session.mode == RoomMode::X1 { "x1, direta entre os PCs" } else { "servidor" };
-        let role = if session.role == Role::Owner { "você é o dono" } else { "você é membro" };
-        let info = format!("Sala {mode} · {role}");
-        let is_owner = invite_host.is_some();
+        let is_owner = core.is_owner();
+        let role = if is_owner { "você é o dono" } else { "você é membro" };
+        let info = format!("Sala {mode} · {role} · mensagens cifradas de ponta a ponta (MLS)");
+        let has_invite_host = invite_host.is_some();
         let (reach_text, reach_warning) = match &reach {
             Some(r) => {
                 let mut text = r.lines.join("\n");
@@ -312,73 +381,112 @@ async fn room_task(ctx: RoomCtx, mut cmds: mpsc::UnboundedReceiver<RoomCmd>, ui:
             }
             None => (String::new(), false),
         };
+        let show_invite = first_invite.is_some();
         let _ = ui.upgrade_in_event_loop(move |ui| {
             ui.set_room_id(room_id[..12].into());
             ui.set_room_info(info.into());
-            ui.set_is_owner(is_owner);
+            ui.set_is_owner(is_owner && has_invite_host);
             ui.set_reach_text(reach_text.into());
             ui.set_reach_warning(reach_warning);
             ui.set_invite_link("".into());
             ui.set_copy_status("".into());
+            ui.set_show_invite(show_invite);
+            ui.set_room_status("".into());
             ui.set_join_link("".into());
+            ui.set_chat(ModelRc::new(VecModel::from(Vec::<ChatRow>::new())));
             ui.set_screen("room".into());
         });
     }
-    if let Some(inv) = first_invite {
-        show_invite(ui, &inv);
+    if let Some(inv) = &first_invite {
+        show_invite(ui, inv);
     }
-    show_people(ui, me, &online, &log);
-    show_route(ui, &session);
 
-    let mut tick = tokio::time::interval(Duration::from_secs(2));
-    let result = loop {
-        tokio::select! {
-            ev = session.next_event() => match ev {
-                Some(Event::Online { member, first_time }) => {
-                    online.retain(|m| *m != member);
-                    online.push(member);
-                    let what = if first_time { "entrou na sala pela primeira vez" } else { "voltou" };
-                    push(&mut log, format!("{}… {what}", member.short()));
-                    show_people(ui, me, &online, &log);
+    let view = Arc::new(Mutex::new(View { me: Some(core.me), log: vec!["Você entrou na sala.".into()], ..View::default() }));
+    let (w1, w2, v) = (ui.clone(), ui.clone(), view.clone());
+    let emit = move |ev: RoomEvent| {
+        let mut v = v.lock().unwrap();
+        match ev {
+            RoomEvent::Status(s) => {
+                let text = s.unwrap_or_default();
+                let _ = w1.upgrade_in_event_loop(move |ui| ui.set_room_status(text.into()));
+                return;
+            }
+            RoomEvent::Invite(inv) => return show_invite(&w1, &inv),
+            RoomEvent::Members(m) => {
+                *shared_members.lock().unwrap() = m.clone();
+                v.members = m;
+            }
+            RoomEvent::Chat(line) => v.chat.push(line),
+            RoomEvent::History(lines) => v.chat = lines,
+            RoomEvent::Notice(text) => {
+                v.log.push(text.into());
+                if v.log.len() > LOG_LINES {
+                    v.log.remove(0);
                 }
-                Some(Event::Offline { member }) => {
-                    online.retain(|m| *m != member);
-                    push(&mut log, format!("{}… saiu", member.short()));
-                    show_people(ui, me, &online, &log);
-                }
-                Some(Event::Disconnected(reason)) => {
-                    let why = if reason.contains("closed by peer") && session.mode == RoomMode::X1 {
-                        "a sala acabou: quem criou fechou o app".to_string()
-                    } else if reason.contains("closed by peer") {
-                        "o host encerrou a conexão".to_string()
-                    } else {
-                        format!("conexão perdida ({reason})")
-                    };
-                    break Err(anyhow::anyhow!("Você saiu da sala: {why}."));
-                }
-                None => break Ok(()),
-            },
-            cmd = cmds.recv() => match cmd {
-                Some(RoomCmd::NewInvite) => if let Some(host) = &invite_host {
-                    match session.issue_invite(host, DEFAULT_INVITE_TTL_SECS).await {
-                        Ok(inv) => {
-                            push(&mut log, "Novo convite gerado.".into());
-                            show_invite(ui, &inv);
-                        }
-                        Err(e) => push(&mut log, format!("Não deu para criar o convite: {}", explain(&e))),
-                    }
-                    show_people(ui, me, &online, &log);
-                },
-                Some(RoomCmd::Leave) | None => break Ok(()),
-            },
-            _ = tick.tick() => show_route(ui, &session),
+            }
         }
+        push_view(&w1, &v);
     };
-    session.close().await;
+    let route = move |r: Option<lerri_client::Route>| {
+        let (text, direct) = match r {
+            Some(r) => {
+                let kind = if r.direct { "direto" } else { "pelo ponto de encontro" };
+                (format!("Caminho {kind} · {:.1} ms", r.rtt.as_secs_f64() * 1000.0), r.direct)
+            }
+            None => (String::new(), false),
+        };
+        let _ = w2.upgrade_in_event_loop(move |ui| {
+            ui.set_route_text(text.into());
+            ui.set_route_direct(direct);
+        });
+    };
+    let exit = room::run(session, core, data_dir.to_path_buf(), invite_host, cmds, emit, route).await;
     if let Some(host) = x1 {
         host.shutdown().await;
     }
-    result
+    exit
+}
+
+fn push_view(ui: &Weak<AppWindow>, v: &View) {
+    let offset = clock::utc_offset_secs();
+    let chat: Vec<ChatRow> = v
+        .chat
+        .iter()
+        .map(|l| ChatRow {
+            who: v.name(l.from).into(),
+            text: l.text.clone().into(),
+            time: clock::hh_mm(l.at, offset).into(),
+            mine: Some(l.from) == v.me,
+        })
+        .collect();
+    let members: Vec<MemberRow> = v
+        .members
+        .iter()
+        .map(|m| MemberRow {
+            label: if m.me { format!("{} (você)", m.label()).into() } else { m.label().into() },
+            online: m.online,
+            owner: m.owner,
+            me: m.me,
+            waiting: m.waiting,
+        })
+        .collect();
+    // Mais recente primeiro: o quadro de atividade é pequeno.
+    let log: Vec<SharedString> = v.log.iter().rev().cloned().collect();
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        let grew = ui.get_chat().row_count() != chat.len();
+        ui.set_chat(ModelRc::new(VecModel::from(chat)));
+        ui.set_members(ModelRc::new(VecModel::from(members)));
+        ui.set_log(ModelRc::new(VecModel::from(log)));
+        if grew {
+            // Rola para o fim depois do layout novo.
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(Duration::from_millis(30), move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.invoke_scroll_chat_to_end();
+                }
+            });
+        }
+    });
 }
 
 fn show_invite(ui: &Weak<AppWindow>, invite: &Invite) {
@@ -387,34 +495,10 @@ fn show_invite(ui: &Weak<AppWindow>, invite: &Invite) {
     let _ = ui.upgrade_in_event_loop(move |ui| {
         ui.set_invite_link(link.into());
         ui.set_copy_status("".into());
+        ui.set_show_invite(true);
         if let Some(px) = pixels {
             ui.set_invite_qr(slint::Image::from_rgb8(px));
         }
-    });
-}
-
-fn show_people(ui: &Weak<AppWindow>, me: MemberId, online: &[MemberId], log: &[SharedString]) {
-    let mut people: Vec<SharedString> = vec![format!("{}… (você)", me.short()).into()];
-    people.extend(online.iter().map(|m| SharedString::from(format!("{}…", m.short()))));
-    // Mais recente primeiro: o quadro de atividade é pequeno.
-    let log: Vec<SharedString> = log.iter().rev().cloned().collect();
-    let _ = ui.upgrade_in_event_loop(move |ui| {
-        ui.set_online(ModelRc::new(VecModel::from(people)));
-        ui.set_log(ModelRc::new(VecModel::from(log)));
-    });
-}
-
-fn show_route(ui: &Weak<AppWindow>, session: &Session) {
-    let (text, direct) = match session.route() {
-        Some(r) => {
-            let kind = if r.direct { "direto" } else { "pelo ponto de encontro" };
-            (format!("Caminho {kind} · {:.1} ms", r.rtt.as_secs_f64() * 1000.0), r.direct)
-        }
-        None => (String::new(), false),
-    };
-    let _ = ui.upgrade_in_event_loop(move |ui| {
-        ui.set_route_text(text.into());
-        ui.set_route_direct(direct);
     });
 }
 
@@ -425,3 +509,5 @@ fn explain(e: &anyhow::Error) -> String {
         None => format!("{e:#}"),
     }
 }
+
+use slint::Model as _;

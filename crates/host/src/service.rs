@@ -1,6 +1,10 @@
-//! Lógica de sala do relay (SPEC-02 §2–3): autentica quem conecta, consome
-//! convites, mantém a lista de membros e avisa presença. Igual no modo
-//! servidor e no x1; muda só onde o estado fica (disco ou memória).
+//! Lógica de sala do relay (SPEC-02 §2–4): autentica quem conecta, consome
+//! convites, avisa presença e é o Delivery Service do MLS: ordena commits
+//! (um por epoch), guarda o log para quem volta, entrega Welcomes e repassa
+//! mensagens cifradas. Ele nunca tem a chave do grupo.
+//!
+//! Igual no modo servidor e no x1; muda só onde o estado fica (disco ou
+//! memória).
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -24,19 +28,58 @@ use tracing::{debug, info, warn};
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Convites pendentes por sala, para um dono descuidado não encher o disco.
 const MAX_PENDING_INVITES: usize = 1000;
+/// Commits guardados por sala. Quem ficar mais atrás que isso pede para ser
+/// readicionado.
+const MAX_COMMIT_LOG: usize = 5000;
+/// Pedidos de entrada pendentes por sala.
+const MAX_PENDING_JOINS: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Room {
     mode: RoomMode,
     owner: MemberId,
+    /// Quem pode conectar (consumiu um `t` ou criou a sala). Pode ainda não
+    /// estar no grupo MLS.
     members: BTreeSet<MemberId>,
     invites: HashMap<TokenHash, Invite>,
+    /// Último epoch MLS ordenado.
+    epoch: u64,
+    commits: Vec<StoredCommit>,
+    pending_joins: HashMap<MemberId, JoinRequest>,
+    pending_welcomes: HashMap<MemberId, Vec<u8>>,
+    /// Saíram, mas ninguém fez o commit de remoção ainda.
+    pending_removals: BTreeSet<MemberId>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Invite {
     expires_at: u64,
     used: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredCommit {
+    epoch: u64,
+    from: MemberId,
+    data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JoinRequest {
+    token_hash: Option<TokenHash>,
+    key_package: Vec<u8>,
+    mac: [u8; 32],
+}
+
+impl JoinRequest {
+    fn frame(&self, member: MemberId) -> Frame {
+        Frame::JoinRequested {
+            member,
+            token_hash: self.token_hash,
+            key_package: self.key_package.clone(),
+            mac: self.mac,
+        }
+    }
 }
 
 struct Peer {
@@ -51,6 +94,22 @@ struct State {
     online: HashMap<RoomId, HashMap<MemberId, Peer>>,
 }
 
+impl State {
+    fn broadcast(&self, room: RoomId, except: MemberId, frame: &Frame) {
+        if let Some(peers) = self.online.get(&room) {
+            for (m, p) in peers {
+                if *m != except {
+                    let _ = p.tx.send(frame.clone());
+                }
+            }
+        }
+    }
+
+    fn send_to(&self, room: RoomId, member: MemberId, frame: Frame) -> bool {
+        self.online.get(&room).and_then(|p| p.get(&member)).is_some_and(|p| p.tx.send(frame).is_ok())
+    }
+}
+
 pub struct RoomService {
     host_key: [u8; 32],
     admin: AdminKey,
@@ -58,6 +117,12 @@ pub struct RoomService {
     store: Option<PathBuf>,
     state: Mutex<State>,
     next_conn: AtomicU64,
+}
+
+enum Admitted {
+    Created,
+    Joined,
+    Rejoined { epoch: u64 },
 }
 
 impl RoomService {
@@ -104,54 +169,79 @@ impl RoomService {
         let Some(Frame::Hello { auth, proof }) = hello else {
             return refuse(&conn, &mut send, Refusal::Protocol).await;
         };
-        let Some(member) = verify_proof(&proof, &self.host_key, conn.remote_id().as_bytes()) else {
+        let Some(me) = verify_proof(&proof, &self.host_key, conn.remote_id().as_bytes()) else {
             return refuse(&conn, &mut send, Refusal::BadProof).await;
         };
-        let (room, first_time) = match self.admit(&auth, member) {
+        let (room, how) = match self.admit(&auth, me) {
             Ok(r) => r,
             Err(refusal) => {
-                info!(member = %member.short(), ?refusal, "entrada recusada");
+                info!(member = %me.short(), ?refusal, "entrada recusada");
                 return refuse(&conn, &mut send, refusal).await;
             }
         };
+        let first_time = matches!(how, Admitted::Joined);
 
         let conn_id = self.next_conn.fetch_add(1, Ordering::Relaxed);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let welcome = {
+        {
             let mut st = self.state.lock().unwrap();
             let r = &st.rooms[&room];
-            let (mode, role) = (r.mode, if r.owner == member { Role::Owner } else { Role::Member });
+            let welcome = Frame::Welcome {
+                room,
+                mode: r.mode,
+                role: if r.owner == me { Role::Owner } else { Role::Member },
+                online: st.online.get(&room).map_or_else(Vec::new, |p| p.keys().copied().filter(|m| *m != me).collect()),
+                owner: r.owner,
+                epoch: r.epoch,
+            };
+            // Tudo o que este membro perdeu, na ordem: commits do log, o
+            // Welcome dele, pedidos de entrada e saídas sem commit.
+            let mut backlog = vec![welcome];
+            if let Admitted::Rejoined { epoch } = how {
+                backlog.extend(
+                    r.commits
+                        .iter()
+                        .filter(|c| c.epoch >= epoch)
+                        .map(|c| Frame::CommitFrom { from: c.from, epoch: c.epoch, data: c.data.clone() }),
+                );
+            }
+            if let Some(w) = r.pending_welcomes.get(&me) {
+                backlog.push(Frame::GroupWelcome { data: w.clone() });
+            }
+            backlog.extend(r.pending_joins.iter().filter(|(m, _)| **m != me).map(|(m, j)| j.frame(*m)));
+            backlog.extend(r.pending_removals.iter().map(|m| Frame::MemberRemoved { member: *m, left: true }));
+            for f in backlog {
+                let _ = tx.send(f);
+            }
+
             let peers = st.online.entry(room).or_default();
-            let online = peers.keys().copied().filter(|m| *m != member).collect();
-            if let Some(old) = peers.insert(member, Peer { conn_id, conn: conn.clone(), tx: tx.clone() }) {
+            if let Some(old) = peers.insert(me, Peer { conn_id, conn: conn.clone(), tx: tx.clone() }) {
                 old.conn.close(0u32.into(), b"conectado em outro lugar");
             }
-            for (m, p) in peers.iter() {
-                if *m != member {
-                    let _ = p.tx.send(Frame::MemberOnline { member, first_time });
-                }
-            }
-            Frame::Welcome { room, mode, role, online }
-        };
-        info!(room = %room, member = %member.short(), first_time, "membro online");
-        write_frame(&mut send, &welcome).await?;
+            st.broadcast(room, me, &Frame::MemberOnline { member: me, first_time });
+        }
+        info!(room = %room, member = %me.short(), first_time, "membro online");
 
         let writer = async {
             while let Some(f) = rx.recv().await {
+                let last = matches!(f, Frame::Removed);
                 write_frame(&mut send, &f).await?;
+                if last {
+                    let _ = send.finish();
+                    // Dá tempo do aviso chegar antes de fechar.
+                    let _ = tokio::time::timeout(Duration::from_secs(2), conn.closed()).await;
+                    break;
+                }
             }
             anyhow::Ok(())
         };
         let reader = async {
             while let Some(frame) = read_frame(&mut recv).await? {
-                let reply = match frame {
-                    Frame::IssueInvite { token_hash, expires_at } => self.issue_invite(room, member, token_hash, expires_at),
-                    other => {
-                        warn!(member = %member.short(), "frame inesperado: {other:?}");
-                        Frame::Refused(Refusal::Protocol)
-                    }
-                };
-                let _ = tx.send(reply);
+                if matches!(frame, Frame::Leave) {
+                    self.leave(room, me);
+                    break;
+                }
+                self.on_frame(room, me, frame);
             }
             anyhow::Ok(())
         };
@@ -159,21 +249,20 @@ impl RoomService {
             r = writer => r,
             r = reader => r,
         };
+        conn.close(0u32.into(), b"fim");
 
         let mut st = self.state.lock().unwrap();
         if let Some(peers) = st.online.get_mut(&room)
-            && peers.get(&member).is_some_and(|p| p.conn_id == conn_id)
+            && peers.get(&me).is_some_and(|p| p.conn_id == conn_id)
         {
-            peers.remove(&member);
-            for p in peers.values() {
-                let _ = p.tx.send(Frame::MemberOffline { member });
-            }
-            info!(room = %room, member = %member.short(), "membro offline");
+            peers.remove(&me);
+            st.broadcast(room, me, &Frame::MemberOffline { member: me });
+            info!(room = %room, member = %me.short(), "membro offline");
         }
         result
     }
 
-    fn admit(&self, auth: &Auth, member: MemberId) -> Result<(RoomId, bool), Refusal> {
+    fn admit(&self, auth: &Auth, member: MemberId) -> Result<(RoomId, Admitted), Refusal> {
         let mut st = self.state.lock().unwrap();
         let result = match *auth {
             Auth::CreateRoom { admin, mode } => {
@@ -181,10 +270,20 @@ impl RoomService {
                     return Err(Refusal::BadAdmin);
                 }
                 let id = RoomId(lerri_crypto::random());
-                let room = Room { mode, owner: member, members: BTreeSet::from([member]), invites: HashMap::new() };
+                let room = Room {
+                    mode,
+                    owner: member,
+                    members: BTreeSet::from([member]),
+                    invites: HashMap::new(),
+                    epoch: 0,
+                    commits: Vec::new(),
+                    pending_joins: HashMap::new(),
+                    pending_welcomes: HashMap::new(),
+                    pending_removals: BTreeSet::new(),
+                };
                 st.rooms.insert(id, room);
                 info!(room = %id, ?mode, owner = %member.short(), "sala criada");
-                (id, false)
+                (id, Admitted::Created)
             }
             Auth::Join { room, token } => {
                 let r = st.rooms.get_mut(&room).ok_or(Refusal::NoSuchRoom)?;
@@ -197,35 +296,73 @@ impl RoomService {
                 }
                 inv.used = true;
                 r.members.insert(member);
-                (room, true)
+                (room, Admitted::Joined)
             }
-            Auth::Rejoin { room } => {
+            Auth::Rejoin { room, epoch } => {
                 let r = st.rooms.get(&room).ok_or(Refusal::NoSuchRoom)?;
                 if !r.members.contains(&member) {
                     return Err(Refusal::NotMember);
                 }
-                return Ok((room, false));
+                return Ok((room, Admitted::Rejoined { epoch }));
             }
         };
         self.persist(&st);
         Ok(result)
     }
 
-    fn issue_invite(&self, room: RoomId, member: MemberId, token_hash: TokenHash, expires_at: u64) -> Frame {
+    fn on_frame(&self, room: RoomId, me: MemberId, frame: Frame) {
         let mut st = self.state.lock().unwrap();
-        let now = unix_now();
-        let Some(r) = st.rooms.get_mut(&room) else { return Frame::Refused(Refusal::NoSuchRoom) };
-        if r.owner != member {
-            return Frame::Refused(Refusal::NotOwner);
+        let reply = match frame {
+            Frame::IssueInvite { token_hash, expires_at } => Some(issue_invite(&mut st, room, me, token_hash, expires_at)),
+            Frame::JoinRequest { token_hash, key_package, mac } => {
+                let Some(r) = st.rooms.get_mut(&room) else { return };
+                if r.pending_joins.len() >= MAX_PENDING_JOINS && !r.pending_joins.contains_key(&me) {
+                    Some(Frame::Refused(Refusal::Protocol))
+                } else {
+                    let req = JoinRequest { token_hash, key_package, mac };
+                    let frame = req.frame(me);
+                    r.pending_joins.insert(me, req);
+                    st.broadcast(room, me, &frame);
+                    None
+                }
+            }
+            Frame::Commit { epoch, data, welcome, adds, removes } => {
+                Some(commit(&mut st, room, me, epoch, data, welcome, adds, removes))
+            }
+            Frame::App { data } => {
+                if let Some(r) = st.rooms.get_mut(&room) {
+                    // Quem manda mensagem já está no grupo.
+                    r.pending_welcomes.remove(&me);
+                }
+                st.broadcast(room, me, &Frame::AppFrom { from: me, data });
+                None
+            }
+            other => {
+                warn!(member = %me.short(), "frame inesperado: {other:?}");
+                Some(Frame::Refused(Refusal::Protocol))
+            }
+        };
+        if let Some(reply) = reply {
+            st.send_to(room, me, reply);
         }
-        r.invites.retain(|_, i| i.expires_at > now);
-        if r.invites.len() >= MAX_PENDING_INVITES {
-            return Frame::Refused(Refusal::Protocol);
-        }
-        let expires_at = expires_at.min(now + MAX_INVITE_TTL_SECS);
-        r.invites.entry(token_hash).or_insert(Invite { expires_at, used: false });
         self.persist(&st);
-        Frame::InviteRegistered { token_hash }
+    }
+
+    fn leave(&self, room: RoomId, me: MemberId) {
+        let mut st = self.state.lock().unwrap();
+        let Some(r) = st.rooms.get_mut(&room) else { return };
+        if r.owner == me {
+            // Transferir a posse entra numa fase futura; o dono não sai.
+            st.send_to(room, me, Frame::Refused(Refusal::Protocol));
+            return;
+        }
+        r.members.remove(&me);
+        r.pending_joins.remove(&me);
+        r.pending_welcomes.remove(&me);
+        r.pending_removals.insert(me);
+        st.broadcast(room, me, &Frame::MemberRemoved { member: me, left: true });
+        info!(room = %room, member = %me.short(), "membro saiu da sala");
+        self.persist(&st);
     }
 
     fn persist(&self, st: &State) {
@@ -235,6 +372,81 @@ impl RoomService {
             warn!("não foi possível salvar as salas: {e:#}");
         }
     }
+}
+
+fn issue_invite(st: &mut State, room: RoomId, me: MemberId, token_hash: TokenHash, expires_at: u64) -> Frame {
+    let now = unix_now();
+    let Some(r) = st.rooms.get_mut(&room) else { return Frame::Refused(Refusal::NoSuchRoom) };
+    if r.owner != me {
+        return Frame::Refused(Refusal::NotOwner);
+    }
+    r.invites.retain(|_, i| i.expires_at > now);
+    if r.invites.len() >= MAX_PENDING_INVITES {
+        return Frame::Refused(Refusal::Protocol);
+    }
+    let expires_at = expires_at.min(now + MAX_INVITE_TTL_SECS);
+    r.invites.entry(token_hash).or_insert(Invite { expires_at, used: false });
+    Frame::InviteRegistered { token_hash }
+}
+
+/// Ordena um commit (SPEC-02 §4.2): só o primeiro de cada epoch passa.
+#[allow(clippy::too_many_arguments)]
+fn commit(
+    st: &mut State,
+    room: RoomId,
+    me: MemberId,
+    epoch: u64,
+    data: Vec<u8>,
+    welcome: Option<Vec<u8>>,
+    adds: Vec<MemberId>,
+    removes: Vec<MemberId>,
+) -> Frame {
+    let Some(r) = st.rooms.get_mut(&room) else { return Frame::Refused(Refusal::NoSuchRoom) };
+    if epoch != r.epoch {
+        return Frame::CommitRejected { current_epoch: r.epoch };
+    }
+    // Tirar alguém que não saiu por conta própria é remoção: só o dono.
+    let kicks: Vec<MemberId> =
+        removes.iter().copied().filter(|m| r.members.contains(m) && !r.pending_removals.contains(m)).collect();
+    if !kicks.is_empty() && me != r.owner {
+        return Frame::Refused(Refusal::NotOwner);
+    }
+    if removes.contains(&r.owner) {
+        return Frame::Refused(Refusal::NotOwner);
+    }
+
+    r.epoch += 1;
+    r.commits.push(StoredCommit { epoch, from: me, data: data.clone() });
+    if r.commits.len() > MAX_COMMIT_LOG {
+        let excess = r.commits.len() - MAX_COMMIT_LOG;
+        r.commits.drain(..excess);
+    }
+    r.pending_welcomes.remove(&me);
+    for a in &adds {
+        r.pending_joins.remove(a);
+        if let Some(w) = &welcome {
+            r.pending_welcomes.insert(*a, w.clone());
+        }
+    }
+    for m in &removes {
+        r.pending_removals.remove(m);
+        r.pending_welcomes.remove(m);
+        r.members.remove(m);
+    }
+    let new_epoch = r.epoch;
+
+    st.broadcast(room, me, &Frame::CommitFrom { from: me, epoch, data });
+    if let Some(w) = &welcome {
+        for a in &adds {
+            st.send_to(room, *a, Frame::GroupWelcome { data: w.clone() });
+        }
+    }
+    for m in &kicks {
+        st.send_to(room, *m, Frame::Removed);
+        st.broadcast(room, *m, &Frame::MemberRemoved { member: *m, left: false });
+        info!(room = %room, member = %m.short(), "membro removido pelo dono");
+    }
+    Frame::CommitAccepted { epoch: new_epoch }
 }
 
 async fn refuse(conn: &Connection, send: &mut SendStream, refusal: Refusal) -> anyhow::Result<()> {

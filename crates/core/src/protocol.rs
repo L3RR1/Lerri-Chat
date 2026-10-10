@@ -8,7 +8,7 @@ use crate::invite::{AdminKey, RouteToken, TokenHash};
 use crate::{MemberId, RoomId};
 
 /// ALPN do protocolo. Muda quando o formato do fio quebra compatibilidade.
-pub const ALPN: &[u8] = b"lerrichat/1";
+pub const ALPN: &[u8] = b"lerrichat/2";
 
 /// Tamanho máximo de um frame, para que um peer não force alocações gigantes.
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
@@ -38,8 +38,9 @@ pub enum Auth {
     CreateRoom { admin: AdminKey, mode: RoomMode },
     /// Entra pela primeira vez com um convite. O relay consome o `t`.
     Join { room: RoomId, token: RouteToken },
-    /// Volta a uma sala da qual já é membro.
-    Rejoin { room: RoomId },
+    /// Volta a uma sala da qual já é membro. `epoch`: epoch MLS local; o relay
+    /// manda os commits que faltam a partir dele.
+    Rejoin { room: RoomId, epoch: u64 },
 }
 
 /// Prova de que o dono da identidade autorizou **esta** conexão: assinatura
@@ -84,14 +85,42 @@ pub enum Frame {
     Hello { auth: Auth, proof: MemberProof },
     /// Registra o hash de um convite novo (só o dono, SPEC-02 §2).
     IssueInvite { token_hash: TokenHash, expires_at: u64 },
+    /// Pede para entrar no grupo MLS: KeyPackage + `HMAC(HKDF(s), KeyPackage)`
+    /// (SPEC-02 §3.3). Sem `token_hash`: membro dessincronizado pedindo para
+    /// ser readicionado.
+    JoinRequest { token_hash: Option<TokenHash>, key_package: Vec<u8>, mac: [u8; 32] },
+    /// Commit MLS para o epoch `epoch`. O relay aceita só o primeiro de cada
+    /// epoch (SPEC-02 §4.2). `adds`/`removes` declaram quem entra e quem sai,
+    /// para o relay entregar o Welcome e cortar conexões; ele não lê o commit.
+    Commit { epoch: u64, data: Vec<u8>, welcome: Option<Vec<u8>>, adds: Vec<MemberId>, removes: Vec<MemberId> },
+    /// Mensagem de aplicação MLS (cifrada), repassada aos outros online.
+    App { data: Vec<u8> },
+    /// Sai da sala de vez.
+    Leave,
 
     // Relay → cliente.
-    Welcome { room: RoomId, mode: RoomMode, role: Role, online: Vec<MemberId> },
+    /// `epoch`: último epoch MLS que o relay ordenou. `owner`: dono da sala.
+    Welcome { room: RoomId, mode: RoomMode, role: Role, online: Vec<MemberId>, owner: MemberId, epoch: u64 },
     Refused(Refusal),
     InviteRegistered { token_hash: TokenHash },
     /// Alguém ficou online. `first_time` quando acabou de entrar pelo convite.
     MemberOnline { member: MemberId, first_time: bool },
     MemberOffline { member: MemberId },
+    /// Repassado aos membros: alguém quer entrar no grupo.
+    JoinRequested { member: MemberId, token_hash: Option<TokenHash>, key_package: Vec<u8>, mac: [u8; 32] },
+    /// Commit aceito de outro membro, ou do log quando você volta.
+    CommitFrom { from: MemberId, epoch: u64, data: Vec<u8> },
+    /// Resposta ao seu commit.
+    CommitAccepted { epoch: u64 },
+    CommitRejected { current_epoch: u64 },
+    /// Welcome MLS que te admite no grupo.
+    GroupWelcome { data: Vec<u8> },
+    AppFrom { from: MemberId, data: Vec<u8> },
+    /// Membro saiu (`left`) ou foi removido pelo dono. Quem ainda tem ele no
+    /// grupo MLS deve fazer o commit de remoção.
+    MemberRemoved { member: MemberId, left: bool },
+    /// Você foi removido da sala.
+    Removed,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -139,7 +168,7 @@ mod tests {
     #[test]
     fn rejects_oversized() {
         let proof = MemberProof { identity_key: [0; 32], signature: vec![0; MAX_FRAME_LEN + 1] };
-        let frame = Frame::Hello { auth: Auth::Rejoin { room: RoomId([0; 16]) }, proof };
+        let frame = Frame::Hello { auth: Auth::Rejoin { room: RoomId([0; 16]), epoch: 0 }, proof };
         assert!(matches!(frame.encode(), Err(CodecError::TooLarge(_))));
     }
 

@@ -67,10 +67,10 @@ async fn server_mode_rooms_and_invites() {
     assert_eq!(refusal(&err), Some(Refusal::NotOwner));
 
     // Quem não é membro não volta; quem é, volta sem convite.
-    assert_eq!(refused(&intruder_id, &host, Auth::Rejoin { room }).await, Refusal::NotMember);
+    assert_eq!(refused(&intruder_id, &host, Auth::Rejoin { room, epoch: 0 }).await, Refusal::NotMember);
     guest.close().await;
     assert_eq!(next(&mut owner).await, Event::Offline { member: guest_id.member_id() });
-    let guest = Session::connect(&guest_id, &host, Auth::Rejoin { room }).await.unwrap();
+    let guest = Session::connect(&guest_id, &host, Auth::Rejoin { room, epoch: 0 }).await.unwrap();
     assert_eq!(next(&mut owner).await, Event::Online { member: guest_id.member_id(), first_time: false });
     guest.close().await;
     owner.close().await;
@@ -80,7 +80,7 @@ async fn server_mode_rooms_and_invites() {
     let relay = start_relay(&dir).await;
     assert_eq!(relay.host_addr().key, host.key);
     assert_eq!(relay.room_count(), 1);
-    let guest = Session::connect(&guest_id, relay.host_addr(), Auth::Rejoin { room }).await.unwrap();
+    let guest = Session::connect(&guest_id, relay.host_addr(), Auth::Rejoin { room, epoch: 0 }).await.unwrap();
     assert_eq!(guest.role, Role::Member);
     guest.close().await;
     relay.shutdown().await;
@@ -145,7 +145,7 @@ async fn x1_assisted_by_meeting_point() {
     let mut wrong = meet;
     wrong.key = [7; 32];
     let host = HostAddr { key: only_meet.key, candidates: vec![], meet: Some(wrong) };
-    let attempt = tokio::time::timeout(Duration::from_secs(8), Session::connect(&id(), &host, Auth::Rejoin { room: invite.room })).await;
+    let attempt = tokio::time::timeout(Duration::from_secs(8), Session::connect(&id(), &host, Auth::Rejoin { room: invite.room, epoch: 0 })).await;
     assert!(!matches!(attempt, Ok(Ok(_))), "conectou por um relay com chave errada");
 
     guest.close().await;
@@ -160,7 +160,7 @@ async fn wrong_host_key_is_rejected() {
     let x1 = X1Host::start(None, 0).await.unwrap();
     let mut host = x1.loopback_addr();
     host.key = *lerri_net::keys::ephemeral().public().as_bytes();
-    let attempt = tokio::time::timeout(Duration::from_secs(8), Session::connect(&id(), &host, Auth::Rejoin { room: lerri_core::RoomId([0; 16]) })).await;
+    let attempt = tokio::time::timeout(Duration::from_secs(8), Session::connect(&id(), &host, Auth::Rejoin { room: lerri_core::RoomId([0; 16]), epoch: 0 })).await;
     assert!(!matches!(attempt, Ok(Ok(_))), "conectou num host com chave diferente da fixada");
     x1.shutdown().await;
 }

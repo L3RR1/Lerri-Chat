@@ -1,7 +1,7 @@
-// Interface mínima da Fase 1 (SPEC-05): início, espera e sala.
+// Interface mínima (SPEC-05): início, espera e sala com chat.
 // Só tokens da paleta; nenhuma animação.
 
-import { LineEdit, ScrollView, Palette } from "std-widgets.slint";
+import { LineEdit, ScrollView, CheckBox, Palette } from "std-widgets.slint";
 
 global Theme {
     out property <color> ink: #0B0710;
@@ -25,11 +25,27 @@ export struct SavedRoomRow {
     label: string,
 }
 
+export struct ChatRow {
+    who: string,
+    text: string,
+    time: string,
+    mine: bool,
+}
+
+export struct MemberRow {
+    label: string,
+    online: bool,
+    owner: bool,
+    me: bool,
+    waiting: bool,
+}
+
 component Btn inherits Rectangle {
     in property <string> text;
     in property <bool> primary;
     in property <bool> danger;
     in property <bool> enabled: true;
+    in property <length> font-size: 14px;
     callback clicked;
     height: 36px;
     min-width: label.preferred-width + 32px;
@@ -52,6 +68,7 @@ component Btn inherits Rectangle {
         width: 100%;
         height: 100%;
         text: root.text;
+        font-size: root.font-size;
         color: !root.enabled ? Theme.text-mute : root.primary ? Theme.ink : root.danger ? Theme.danger : Theme.text;
         font-weight: 600;
         horizontal-alignment: center;
@@ -77,32 +94,64 @@ component Dim inherits Text {
     wrap: word-wrap;
 }
 
+component Dot inherits Rectangle {
+    in property <color> tone;
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: tone;
+}
+
 component HomeView inherits VerticalLayout {
     in property <string> my-id;
     in property <[SavedRoomRow]> saved-rooms;
     in-out property <string> join-link;
     in-out property <string> via-link;
     in-out property <string> admin-link;
+    in-out property <string> nickname;
+    in-out property <bool> keep-history;
     callback join();
     callback create-x1();
     callback create-server();
     callback open-room(int);
+    callback save-settings();
 
     padding: 24px;
     spacing: 16px;
 
     HorizontalLayout {
-        Text { text: "Lerri Chat"; color: Theme.text; font-size: 28px; font-weight: 600; }
+        spacing: 16px;
+        Text { text: "Lerri Chat"; color: Theme.text; font-size: 28px; font-weight: 600; vertical-alignment: center; }
         Rectangle { }
         VerticalLayout {
             alignment: center;
-            Text { text: "você: " + root.my-id + "…"; color: Theme.text-dim; font-family: "Cascadia Mono"; }
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: "Apelido"; color: Theme.text-dim; vertical-alignment: center; }
+                LineEdit {
+                    width: 200px;
+                    text <=> root.nickname;
+                    placeholder-text: "opcional, só a sala vê";
+                    edited => { root.save-settings(); }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                CheckBox {
+                    text: "Guardar histórico do chat neste PC";
+                    checked <=> root.keep-history;
+                    toggled => { root.save-settings(); }
+                }
+            }
+            Text { text: "id: " + root.my-id + "…"; color: Theme.text-mute; font-family: "Cascadia Mono"; font-size: 12px; horizontal-alignment: right; }
         }
     }
 
     HorizontalLayout {
         spacing: 16px;
         Card {
+            horizontal-stretch: 1;
             VerticalLayout {
                 padding: 20px;
                 spacing: 12px;
@@ -121,6 +170,7 @@ component HomeView inherits VerticalLayout {
             }
         }
         Card {
+            horizontal-stretch: 1;
             VerticalLayout {
                 padding: 20px;
                 spacing: 12px;
@@ -142,6 +192,7 @@ component HomeView inherits VerticalLayout {
     HorizontalLayout {
         spacing: 16px;
         Card {
+            horizontal-stretch: 1;
             VerticalLayout {
                 padding: 20px;
                 spacing: 12px;
@@ -150,20 +201,15 @@ component HomeView inherits VerticalLayout {
                 if root.saved-rooms.length == 0: Dim { text: "Nenhuma sala salva. Salas de servidor aparecem aqui depois que você entra nelas."; }
                 for room[i] in root.saved-rooms: HorizontalLayout {
                     spacing: 12px;
-                    VerticalLayout {
-                        alignment: center;
-                        Text { text: room.id; color: Theme.text; font-family: "Cascadia Mono"; }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        Text { text: room.label; color: Theme.text-dim; }
-                    }
+                    Text { text: room.id; color: Theme.text; font-family: "Cascadia Mono"; vertical-alignment: center; }
+                    Text { text: room.label; color: Theme.text-dim; vertical-alignment: center; }
                     Rectangle { }
                     Btn { text: "Abrir"; clicked => { root.open-room(i); } }
                 }
             }
         }
         Card {
+            horizontal-stretch: 1;
             VerticalLayout {
                 padding: 20px;
                 spacing: 12px;
@@ -188,76 +234,107 @@ component HomeView inherits VerticalLayout {
 component RoomView inherits HorizontalLayout {
     in property <string> room-id;
     in property <string> room-info;
+    in property <string> room-status;
     in property <string> route-text;
     in property <bool> route-direct;
     in property <string> reach-text;
     in property <bool> reach-warning;
     in property <bool> is-owner;
+    in-out property <bool> show-invite;
     in property <string> invite-link;
     in property <image> invite-qr;
     in property <string> copy-status;
-    in property <[string]> online;
+    in property <[ChatRow]> chat;
+    in-out property <string> chat-draft;
+    in property <[MemberRow]> members;
     in property <[string]> log;
     callback new-invite();
     callback copy-invite();
-    callback leave();
+    callback send-chat();
+    callback remove-member(int);
+    callback disconnect();
+    callback leave-room();
 
-    padding: 24px;
+    property <bool> confirm-leave;
+    property <int> confirm-remove: -1;
+
+    public function scroll-to-end() {
+        chat-sv.content-y = min(0px, chat-sv.visible-height - chat-sv.content-height);
+    }
+
+    padding: 20px;
     spacing: 16px;
 
     VerticalLayout {
-        spacing: 16px;
+        spacing: 12px;
+        horizontal-stretch: 1;
+
         HorizontalLayout {
-            spacing: 12px;
+            spacing: 8px;
             VerticalLayout {
                 Title { text: "Sala " + root.room-id; font-family: "Cascadia Mono"; }
                 Dim { text: root.room-info; }
             }
             Rectangle { }
+            if root.is-owner: VerticalLayout {
+                alignment: center;
+                Btn { text: root.show-invite ? "Ocultar convite" : "Convidar"; clicked => { root.show-invite = !root.show-invite; } }
+            }
             VerticalLayout {
                 alignment: center;
-                Btn { text: "Sair da sala"; danger: true; clicked => { root.leave(); } }
+                Btn { text: "Desconectar"; clicked => { root.disconnect(); } }
+            }
+            if !root.is-owner: VerticalLayout {
+                alignment: center;
+                Btn {
+                    text: root.confirm-leave ? "Confirmar: sair de vez" : "Sair da sala";
+                    danger: true;
+                    clicked => {
+                        if (root.confirm-leave) { root.leave-room(); } else { root.confirm-leave = true; }
+                    }
+                }
             }
         }
 
         HorizontalLayout {
             spacing: 8px;
-            Rectangle {
-                width: 10px;
-                height: 10px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 5px;
-                background: root.route-text == "" ? Theme.text-mute : root.route-direct ? Theme.success : Theme.warning;
-            }
-            Text {
-                text: root.route-text == "" ? "sem conexão" : root.route-text;
-                color: Theme.text-dim;
-                vertical-alignment: center;
+            VerticalLayout { alignment: center; Dot { tone: root.route-text == "" ? Theme.text-mute : root.route-direct ? Theme.success : Theme.warning; } }
+            Text { text: root.route-text == "" ? "sem conexão" : root.route-text; color: Theme.text-dim; vertical-alignment: center; }
+        }
+
+        if root.room-status != "": Rectangle {
+            background: Theme.surface-raised;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.warning;
+            HorizontalLayout {
+                padding: 12px;
+                Text { text: root.room-status; color: Theme.warning; wrap: word-wrap; }
             }
         }
 
-        if root.reach-text != "": Card {
+        if root.show-invite && root.reach-text != "": Card {
             border-color: root.reach-warning ? Theme.warning : Theme.border;
             VerticalLayout {
-                padding: 16px;
-                spacing: 8px;
+                padding: 14px;
+                spacing: 6px;
                 Text { text: "Endereços no convite"; color: Theme.text; font-weight: 600; }
-                Text { text: root.reach-text; color: root.reach-warning ? Theme.warning : Theme.text-dim; wrap: word-wrap; font-family: "Cascadia Mono"; }
+                Text { text: root.reach-text; color: root.reach-warning ? Theme.warning : Theme.text-dim; wrap: word-wrap; font-family: "Cascadia Mono"; font-size: 12px; }
             }
         }
 
-        if root.is-owner: Card {
+        if root.is-owner && root.show-invite: Card {
             HorizontalLayout {
-                padding: 16px;
+                padding: 14px;
                 spacing: 16px;
                 if root.invite-link == "": Rectangle {
-                    width: 196px;
-                    height: 196px;
+                    width: 168px;
+                    height: 168px;
                     background: Theme.surface-raised;
                     border-radius: 4px;
                     Text {
-                        width: parent.width - 24px;
                         x: 12px;
+                        width: parent.width - 24px;
                         height: parent.height;
                         text: "Clique em \"Novo convite\" para gerar um link e o QR.";
                         color: Theme.text-dim;
@@ -267,25 +344,20 @@ component RoomView inherits HorizontalLayout {
                     }
                 }
                 if root.invite-link != "": Rectangle {
-                    width: 196px;
-                    height: 196px;
+                    width: 168px;
+                    height: 168px;
                     background: white;
                     border-radius: 4px;
-                    Image {
-                        width: 188px;
-                        height: 188px;
-                        source: root.invite-qr;
-                        image-rendering: pixelated;
-                    }
+                    Image { width: 160px; height: 160px; source: root.invite-qr; image-rendering: pixelated; }
                 }
                 VerticalLayout {
-                    spacing: 10px;
+                    spacing: 8px;
                     Text { text: "Convite"; color: Theme.text; font-weight: 600; }
                     Dim { text: "Uso único, válido por 24 h. Envie por um canal confiável."; }
                     Rectangle {
                         background: Theme.surface-raised;
                         border-radius: 6px;
-                        min-height: 64px;
+                        min-height: 56px;
                         Text {
                             x: 10px;
                             y: 8px;
@@ -294,7 +366,7 @@ component RoomView inherits HorizontalLayout {
                             text: root.invite-link;
                             color: Theme.text-dim;
                             font-family: "Cascadia Mono";
-                            font-size: 12px;
+                            font-size: 11px;
                             wrap: char-wrap;
                             overflow: elide;
                         }
@@ -304,10 +376,7 @@ component RoomView inherits HorizontalLayout {
                         alignment: start;
                         Btn { text: "Copiar link"; primary: true; enabled: root.invite-link != ""; clicked => { root.copy-invite(); } }
                         Btn { text: "Novo convite"; clicked => { root.new-invite(); } }
-                        VerticalLayout {
-                            alignment: center;
-                            Text { text: root.copy-status; color: Theme.success; }
-                        }
+                        Text { text: root.copy-status; color: Theme.success; vertical-alignment: center; }
                     }
                 }
             }
@@ -316,37 +385,87 @@ component RoomView inherits HorizontalLayout {
         Card {
             vertical-stretch: 1;
             VerticalLayout {
-                padding: 16px;
+                padding: 14px;
+                spacing: 10px;
+                chat-sv := ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 10px;
+                        if root.chat.length == 0: Dim { text: "Nenhuma mensagem ainda. As mensagens são cifradas no seu PC; o servidor só repassa bytes."; }
+                        for line in root.chat: VerticalLayout {
+                            spacing: 2px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                Text { text: line.who; color: line.mine ? Theme.violet-bright : Theme.text; font-weight: 600; }
+                                Text { text: line.time; color: Theme.text-mute; font-size: 12px; vertical-alignment: center; }
+                            }
+                            Text { text: line.text; color: Theme.text; wrap: word-wrap; }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        text <=> root.chat-draft;
+                        placeholder-text: root.room-status != "" ? "aguardando admissão…" : "Mensagem";
+                        enabled: root.room-status == "";
+                        accepted => { root.send-chat(); }
+                    }
+                    Btn { text: "Enviar"; primary: true; enabled: root.room-status == "" && root.chat-draft != ""; clicked => { root.send-chat(); } }
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        width: 280px;
+        spacing: 12px;
+        Card {
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+                alignment: start;
+                Text { text: "Membros"; color: Theme.text; font-weight: 600; }
+                for m[i] in root.members: HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout { alignment: center; Dot { tone: m.online ? Theme.success : Theme.text-mute; } }
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: m.label; color: m.online ? Theme.text : Theme.text-dim; overflow: elide; }
+                        if m.owner || m.waiting: Text {
+                            text: m.owner ? "dono" : "aguardando admissão";
+                            color: m.owner ? Theme.violet-bright : Theme.warning;
+                            font-size: 11px;
+                        }
+                    }
+                    Rectangle { }
+                    if root.is-owner && !m.me && !m.waiting: Btn {
+                        height: 26px;
+                        font-size: 12px;
+                        text: root.confirm-remove == i ? "Confirmar" : "Remover";
+                        danger: true;
+                        clicked => {
+                            if (root.confirm-remove == i) { root.remove-member(i); root.confirm-remove = -1; } else { root.confirm-remove = i; }
+                        }
+                    }
+                }
+            }
+        }
+        Card {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 14px;
                 spacing: 6px;
                 Text { text: "Atividade"; color: Theme.text; font-weight: 600; }
                 ScrollView {
                     VerticalLayout {
                         alignment: start;
                         spacing: 4px;
-                        for line in root.log: Text { text: line; color: Theme.text-dim; wrap: word-wrap; }
+                        for line in root.log: Text { text: line; color: Theme.text-dim; wrap: word-wrap; font-size: 12px; }
                     }
                 }
-            }
-        }
-    }
-
-    Card {
-        width: 240px;
-        VerticalLayout {
-            padding: 16px;
-            spacing: 8px;
-            alignment: start;
-            Text { text: "Online (" + root.online.length + ")"; color: Theme.text; font-weight: 600; }
-            for m in root.online: HorizontalLayout {
-                spacing: 8px;
-                Rectangle {
-                    width: 8px;
-                    height: 8px;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: 4px;
-                    background: Theme.success;
-                }
-                Text { text: m; color: Theme.text-dim; font-family: "Cascadia Mono"; }
             }
         }
     }
@@ -354,10 +473,10 @@ component RoomView inherits HorizontalLayout {
 
 export component AppWindow inherits Window {
     title: "Lerri Chat";
-    preferred-width: 1000px;
-    preferred-height: 680px;
-    min-width: 760px;
-    min-height: 520px;
+    preferred-width: 1080px;
+    preferred-height: 720px;
+    min-width: 820px;
+    min-height: 560px;
     background: Theme.ink;
     default-font-family: "Segoe UI";
     default-font-size: 14px;
@@ -372,27 +491,39 @@ export component AppWindow inherits Window {
     in-out property <string> join-link;
     in-out property <string> via-link;
     in-out property <string> admin-link;
+    in-out property <string> nickname;
+    in-out property <bool> keep-history;
 
     in property <string> room-id;
     in property <string> room-info;
+    in property <string> room-status;
     in property <string> route-text;
     in property <bool> route-direct;
     in property <string> reach-text;
     in property <bool> reach-warning;
     in property <bool> is-owner;
+    in-out property <bool> show-invite;
     in property <string> invite-link;
     in property <image> invite-qr;
     in property <string> copy-status;
-    in property <[string]> online;
+    in property <[ChatRow]> chat;
+    in-out property <string> chat-draft;
+    in property <[MemberRow]> members;
     in property <[string]> log;
 
     callback join();
     callback create-x1();
     callback create-server();
     callback open-room(int);
+    callback save-settings();
     callback new-invite();
     callback copy-invite();
-    callback leave();
+    callback send-chat();
+    callback remove-member(int);
+    callback disconnect();
+    callback leave-room();
+    callback scroll-chat-to-end();
+    scroll-chat-to-end => { room-view.scroll-to-end(); }
 
     init => {
         Palette.color-scheme = ColorScheme.dark;
@@ -411,44 +542,63 @@ export component AppWindow inherits Window {
             }
         }
 
-        if root.screen == "home": HomeView {
-            my-id: root.my-id;
-            saved-rooms: root.saved-rooms;
-            join-link <=> root.join-link;
-            via-link <=> root.via-link;
-            admin-link <=> root.admin-link;
-            join => { root.join(); }
-            create-x1 => { root.create-x1(); }
-            create-server => { root.create-server(); }
-            open-room(i) => { root.open-room(i); }
-        }
+        Rectangle {
+            vertical-stretch: 1;
+            HomeView {
+                width: parent.width;
+                height: parent.height;
+                visible: root.screen == "home";
+                my-id: root.my-id;
+                saved-rooms: root.saved-rooms;
+                join-link <=> root.join-link;
+                via-link <=> root.via-link;
+                admin-link <=> root.admin-link;
+                nickname <=> root.nickname;
+                keep-history <=> root.keep-history;
+                join => { root.join(); }
+                create-x1 => { root.create-x1(); }
+                create-server => { root.create-server(); }
+                open-room(i) => { root.open-room(i); }
+                save-settings => { root.save-settings(); }
+            }
 
-        if root.screen == "busy": VerticalLayout {
-            alignment: center;
-            Text {
+            if root.screen == "busy": Text {
+                width: parent.width;
+                height: parent.height;
                 text: root.busy-text;
                 color: Theme.text-dim;
                 font-size: 16px;
                 horizontal-alignment: center;
+                vertical-alignment: center;
             }
-        }
 
-        if root.screen == "room": RoomView {
-            room-id: root.room-id;
-            room-info: root.room-info;
-            route-text: root.route-text;
-            route-direct: root.route-direct;
-            reach-text: root.reach-text;
-            reach-warning: root.reach-warning;
-            is-owner: root.is-owner;
-            invite-link: root.invite-link;
-            invite-qr: root.invite-qr;
-            copy-status: root.copy-status;
-            online: root.online;
-            log: root.log;
-            new-invite => { root.new-invite(); }
-            copy-invite => { root.copy-invite(); }
-            leave => { root.leave(); }
+            room-view := RoomView {
+                width: parent.width;
+                height: parent.height;
+                visible: root.screen == "room";
+                room-id: root.room-id;
+                room-info: root.room-info;
+                room-status: root.room-status;
+                route-text: root.route-text;
+                route-direct: root.route-direct;
+                reach-text: root.reach-text;
+                reach-warning: root.reach-warning;
+                is-owner: root.is-owner;
+                show-invite <=> root.show-invite;
+                invite-link: root.invite-link;
+                invite-qr: root.invite-qr;
+                copy-status: root.copy-status;
+                chat: root.chat;
+                chat-draft <=> root.chat-draft;
+                members: root.members;
+                log: root.log;
+                new-invite => { root.new-invite(); }
+                copy-invite => { root.copy-invite(); }
+                send-chat => { root.send-chat(); }
+                remove-member(i) => { root.remove-member(i); }
+                disconnect => { root.disconnect(); }
+                leave-room => { root.leave-room(); }
+            }
         }
     }
 }

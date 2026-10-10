@@ -6,12 +6,14 @@
 mod protocol_handler;
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
 use lerri_client::rooms::{self, SavedRoom};
-use lerri_client::{Event, Session};
+use lerri_client::Session;
+use lerri_client::room::{self, Command, Exit, MemberView, OpenHow, RoomCore, RoomEvent};
 use lerri_core::invite::{DEFAULT_INVITE_TTL_SECS, HostAddr, Invite, Link};
-use lerri_core::protocol::{Auth, Role, RoomMode};
+use lerri_core::protocol::{Role, RoomMode};
 use lerri_core::unix_now;
 use lerri_crypto::Identity;
 use lerri_host::{RelayConfig, X1Host};
@@ -38,13 +40,13 @@ Uso:
   lerrichat --register               faz os links lerrichat:// abrirem este programa
   lerrichat --unregister
 
-Dentro de uma sala: convite, membros, rota, sair.
+Dentro de uma sala (terminal): mensagens, /convite, /membros, /rota, /remover, /sair-da-sala, /sair.
 
 Opções comuns:
   --data-dir PASTA    pasta de dados (padrão: %APPDATA%\\LerriChat)
   --version, --help";
 
-enum Command {
+enum Action {
     Gui(Option<String>),
     Identity,
     Host,
@@ -58,7 +60,7 @@ enum Command {
 }
 
 struct Args {
-    command: Command,
+    command: Action,
     cli: bool,
     port: Option<u16>,
     public: Vec<String>,
@@ -67,11 +69,11 @@ struct Args {
 }
 
 fn parse_args() -> anyhow::Result<Option<Args>> {
-    let mut args = Args { command: Command::Gui(None), cli: false, port: None, public: Vec::new(), meet: true, data_dir: None };
+    let mut args = Args { command: Action::Gui(None), cli: false, port: None, public: Vec::new(), meet: true, data_dir: None };
     let mut via = None;
     let mut it = std::env::args().skip(1);
-    let set = |cmd: Command, current: &mut Command| {
-        if !matches!(current, Command::Gui(None)) {
+    let set = |cmd: Action, current: &mut Action| {
+        if !matches!(current, Action::Gui(None)) {
             bail!("escolha um comando só\n\n{USAGE}");
         }
         *current = cmd;
@@ -88,35 +90,35 @@ fn parse_args() -> anyhow::Result<Option<Args>> {
                 println!("lerrichat {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
             }
-            "--id" => set(Command::Identity, &mut args.command)?,
+            "--id" => set(Action::Identity, &mut args.command)?,
             "--cli" => args.cli = true,
-            "--host" => set(Command::Host, &mut args.command)?,
-            "--join" => set(Command::Join(value()?), &mut args.command)?,
-            "--x1" => set(Command::X1 { via: None }, &mut args.command)?,
+            "--host" => set(Action::Host, &mut args.command)?,
+            "--join" => set(Action::Join(value()?), &mut args.command)?,
+            "--x1" => set(Action::X1 { via: None }, &mut args.command)?,
             "--via" => via = Some(value()?),
-            "--create" => set(Command::Create(value()?), &mut args.command)?,
-            "--rooms" => set(Command::Rooms, &mut args.command)?,
-            "--open" => set(Command::Open(value()?), &mut args.command)?,
-            "--register" => set(Command::Register, &mut args.command)?,
-            "--unregister" => set(Command::Unregister, &mut args.command)?,
+            "--create" => set(Action::Create(value()?), &mut args.command)?,
+            "--rooms" => set(Action::Rooms, &mut args.command)?,
+            "--open" => set(Action::Open(value()?), &mut args.command)?,
+            "--register" => set(Action::Register, &mut args.command)?,
+            "--unregister" => set(Action::Unregister, &mut args.command)?,
             "--port" => args.port = Some(value()?.parse().context("--port inválido")?),
             "--public" => args.public.push(value()?),
             "--no-meet" => args.meet = false,
             "--data-dir" => args.data_dir = Some(value()?.into()),
-            link if link.starts_with(&format!("{SCHEME}:")) => set(Command::Join(link.into()), &mut args.command)?,
+            link if link.starts_with(&format!("{SCHEME}:")) => set(Action::Join(link.into()), &mut args.command)?,
             other => bail!("opção desconhecida: {other}\n\n{USAGE}"),
         }
     }
     match (&mut args.command, via) {
-        (Command::X1 { via: v }, Some(link)) => *v = Some(link),
+        (Action::X1 { via: v }, Some(link)) => *v = Some(link),
         (_, Some(_)) => bail!("--via só vale com --x1"),
         _ => {}
     }
     // Convite abre a janela, a menos que peça o terminal.
-    if let Command::Join(link) = &args.command
+    if let Action::Join(link) = &args.command
         && !args.cli
     {
-        args.command = Command::Gui(Some(link.clone()));
+        args.command = Action::Gui(Some(link.clone()));
     }
     Ok(Some(args))
 }
@@ -135,7 +137,7 @@ fn main() -> std::process::ExitCode {
             Some(d) => d,
             None => lerri_core::paths::default_data_dir().context("pasta de dados não encontrada")?,
         };
-        if let Command::Gui(link) = args.command {
+        if let Action::Gui(link) = args.command {
             return gui(data_dir, link);
         }
         tokio::runtime::Runtime::new()?.block_on(run(args, data_dir))
@@ -154,25 +156,25 @@ fn main() -> std::process::ExitCode {
 
 async fn run(args: Args, data_dir: PathBuf) -> anyhow::Result<()> {
     match args.command {
-        Command::Host => {
+        Action::Host => {
             firewall_notice();
             let cfg = RelayConfig { data_dir, port: args.port, public: args.public, meet: args.meet };
             lerri_host::run_foreground(&cfg).await
         }
-        Command::Register => {
+        Action::Register => {
             let exe = std::env::current_exe()?;
             protocol_handler::register(SCHEME, &exe)?;
             println!("Links {SCHEME}:// agora abrem {}", exe.display());
             Ok(())
         }
-        Command::Unregister => {
+        Action::Unregister => {
             protocol_handler::unregister(SCHEME)?;
             println!("Links {SCHEME}:// não abrem mais o Lerri Chat");
             Ok(())
         }
-        Command::Rooms => list_rooms(&data_dir),
-        Command::Gui(_) => unreachable!("a janela não roda dentro do runtime"),
-        Command::Identity => {
+        Action::Rooms => list_rooms(&data_dir),
+        Action::Gui(_) => unreachable!("a janela não roda dentro do runtime"),
+        Action::Identity => {
             load_identity(&data_dir)?;
             match protocol_handler::registered_command(SCHEME) {
                 Some(cmd) => println!("Links {SCHEME}:// abrem: {cmd}"),
@@ -182,10 +184,10 @@ async fn run(args: Args, data_dir: PathBuf) -> anyhow::Result<()> {
             println!("\n{USAGE}");
             Ok(())
         }
-        Command::Join(link) => join(&data_dir, &link).await,
-        Command::Open(prefix) => open(&data_dir, &prefix).await,
-        Command::Create(link) => create(&data_dir, &link).await,
-        Command::X1 { via } => x1(&data_dir, via.as_deref(), args.port.unwrap_or(0)).await,
+        Action::Join(link) => join(&data_dir, &link).await,
+        Action::Open(prefix) => open(&data_dir, &prefix).await,
+        Action::Create(link) => create(&data_dir, &link).await,
+        Action::X1 { via } => x1(&data_dir, via.as_deref(), args.port.unwrap_or(0)).await,
     }
 }
 
@@ -205,41 +207,42 @@ async fn join(data_dir: &Path, link: &str) -> anyhow::Result<()> {
     }
     let identity = load_identity(data_dir)?;
     println!("Convidado por {}…  Conectando…", invite.inviter.short());
-    let session = Session::connect(&identity, &invite.host, Auth::Join { room: invite.room, token: invite.token })
-        .await
-        .map_err(explain)?;
+    let how = OpenHow::Join { room: invite.room, token: invite.token, secret: invite.secret.clone() };
+    let (session, core) = room::open(&identity, data_dir, &invite.host, how).await.map_err(explain)?;
     if session.mode == RoomMode::Server {
         rooms::remember(
             data_dir,
             SavedRoom { room: session.room, host: invite.host.clone(), mode: session.mode, role: session.role },
         )?;
     }
-    room_loop(session, None).await
+    room_loop(session, core, data_dir, None).await
 }
 
 async fn open(data_dir: &Path, prefix: &str) -> anyhow::Result<()> {
     let saved = rooms::find(data_dir, prefix)?;
     let identity = load_identity(data_dir)?;
     println!("Conectando…");
-    let session = Session::connect(&identity, &saved.host, Auth::Rejoin { room: saved.room }).await.map_err(explain)?;
-    let invite_host = (session.role == Role::Owner).then(|| saved.host.clone());
-    room_loop(session, invite_host).await
+    let how = OpenHow::Rejoin { room: saved.room, mode: saved.mode };
+    let (session, core) = room::open(&identity, data_dir, &saved.host, how).await.map_err(explain)?;
+    let invite_host = core.is_owner().then(|| saved.host.clone());
+    room_loop(session, core, data_dir, invite_host).await
 }
 
 async fn create(data_dir: &Path, link: &str) -> anyhow::Result<()> {
     let Link::Relay(relay) = Link::parse(link)? else { bail!("use o link de administração do relay") };
     let admin = relay.admin.context("este é o link público do relay; criar sala exige o link de administração")?;
     let identity = load_identity(data_dir)?;
-    let session = Session::connect(&identity, &relay.host, Auth::CreateRoom { admin, mode: RoomMode::Server })
-        .await
-        .map_err(explain)?;
+    let how = OpenHow::Create { admin, mode: RoomMode::Server };
+    let (session, mut core) = room::open(&identity, data_dir, &relay.host, how).await.map_err(explain)?;
     rooms::remember(
         data_dir,
         SavedRoom { room: session.room, host: relay.host.clone(), mode: session.mode, role: session.role },
     )?;
     println!("Sala criada e salva. Para voltar depois: lerrichat --open {}", &session.room.to_string()[..8]);
-    print_invite(&session.issue_invite(&relay.host, DEFAULT_INVITE_TTL_SECS).await?);
-    room_loop(session, Some(relay.host)).await
+    let inv = session.issue_invite(&relay.host, DEFAULT_INVITE_TTL_SECS).await?;
+    core.share_invite(&inv);
+    print_invite(&inv);
+    room_loop(session, core, data_dir, Some(relay.host)).await
 }
 
 async fn x1(data_dir: &Path, via: Option<&str>, port: u16) -> anyhow::Result<()> {
@@ -258,12 +261,13 @@ async fn x1(data_dir: &Path, via: Option<&str>, port: u16) -> anyhow::Result<()>
     let (public, classified) = host.host_addr().await;
     print_reachability(&classified, assisted);
 
-    let session =
-        Session::connect(&identity, &host.loopback_addr(), Auth::CreateRoom { admin: host.admin(), mode: RoomMode::X1 })
-            .await?;
+    let how = OpenHow::Create { admin: host.admin(), mode: RoomMode::X1 };
+    let (session, mut core) = room::open(&identity, data_dir, &host.loopback_addr(), how).await?;
     println!("Sala x1 criada. Ela existe enquanto este programa estiver aberto.");
-    print_invite(&session.issue_invite(&public, DEFAULT_INVITE_TTL_SECS).await?);
-    let result = room_loop(session, Some(public)).await;
+    let inv = session.issue_invite(&public, DEFAULT_INVITE_TTL_SECS).await?;
+    core.share_invite(&inv);
+    print_invite(&inv);
+    let result = room_loop(session, core, data_dir, Some(public)).await;
     host.shutdown().await;
     result
 }
@@ -293,75 +297,111 @@ fn print_invite(invite: &Invite) {
     }
 }
 
-async fn room_loop(mut session: Session, invite_host: Option<HostAddr>) -> anyhow::Result<()> {
-    let role = if session.role == Role::Owner { "dono" } else { "membro" };
-    let mode = if session.mode == RoomMode::X1 { "x1" } else { "servidor" };
-    println!("Na sala {} ({mode}, você é {role}).", session.room);
-    let mut online: Vec<_> = session.online.clone();
-    print_online(&online);
-    if let Some(route) = session.route() {
-        println!("Caminho: {}", describe_route(&route));
-    }
+const ROOM_HELP: &str =
+    "Digite uma mensagem e Enter para enviar. Comandos: /convite, /membros, /rota, /remover PREFIXO, /sair-da-sala, /sair";
 
-    let (tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<String>();
+/// Uma linha do teclado vira um comando da sala (`None`: já tratada aqui).
+fn parse_line(line: &str, members: &Mutex<Vec<MemberView>>, route: &Mutex<Option<lerri_client::Route>>) -> Option<Command> {
+    match line {
+        "" => None,
+        "/sair" | "sair" => Some(Command::Close),
+        "/sair-da-sala" => Some(Command::LeaveRoom),
+        "/convite" | "convite" => Some(Command::NewInvite),
+        "/membros" | "membros" => {
+            for v in members.lock().unwrap().iter() {
+                let tags: Vec<&str> = [(v.owner, "dono"), (v.waiting, "aguardando admissão"), (!v.online, "offline")]
+                    .into_iter()
+                    .filter_map(|(on, s)| on.then_some(s))
+                    .collect();
+                let tags = if tags.is_empty() { String::new() } else { format!(" ({})", tags.join(", ")) };
+                println!("  {}{tags}", v.label());
+            }
+            None
+        }
+        "/rota" | "rota" => {
+            match route.lock().unwrap().as_ref() {
+                Some(r) => println!("Caminho: {}", describe_route(r)),
+                None => println!("Sem caminho ativo."),
+            }
+            None
+        }
+        l if l.starts_with("/remover ") => {
+            let prefix = l["/remover ".len()..].trim().to_ascii_lowercase();
+            let hits: Vec<_> =
+                members.lock().unwrap().iter().filter(|v| v.id.to_string().starts_with(&prefix)).map(|v| v.id).collect();
+            match hits.as_slice() {
+                [one] => Some(Command::Remove(*one)),
+                [] => {
+                    println!("Ninguém com esse começo de id. Veja /membros.");
+                    None
+                }
+                _ => {
+                    println!("Mais de um membro com esse começo de id; use mais dígitos.");
+                    None
+                }
+            }
+        }
+        l if l.starts_with('/') => {
+            println!("{ROOM_HELP}");
+            None
+        }
+        text => Some(Command::Send(text.to_string())),
+    }
+}
+
+async fn room_loop(session: Session, core: RoomCore, data_dir: &Path, invite_host: Option<HostAddr>) -> anyhow::Result<()> {
+    let role = if core.is_owner() { "dono" } else { "membro" };
+    let mode = if session.mode == RoomMode::X1 { "x1" } else { "servidor" };
+    println!("Na sala {} ({mode}, você é {role}). Mensagens cifradas de ponta a ponta (MLS).", session.room);
+    println!("{ROOM_HELP}");
+
+    let members: Arc<Mutex<Vec<MemberView>>> = Arc::default();
+    let route: Arc<Mutex<Option<lerri_client::Route>>> = Arc::default();
+    let (cmds, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let (m, r) = (members.clone(), route.clone());
     std::thread::spawn(move || {
         for line in std::io::stdin().lines() {
             let Ok(line) = line else { break };
-            if tx.send(line).is_err() {
-                break;
+            if let Some(cmd) = parse_line(line.trim(), &m, &r)
+                && cmds.send(cmd).is_err()
+            {
+                return;
             }
         }
+        let _ = cmds.send(Command::Close);
     });
 
-    loop {
-        tokio::select! {
-            ev = session.next_event() => match ev {
-                Some(Event::Online { member, first_time }) => {
-                    online.retain(|m| *m != member);
-                    online.push(member);
-                    let what = if first_time { "entrou na sala pela primeira vez" } else { "voltou" };
-                    println!("+ {}… {what}", member.short());
-                }
-                Some(Event::Offline { member }) => {
-                    online.retain(|m| *m != member);
-                    println!("- {}… saiu", member.short());
-                }
-                Some(Event::Disconnected(reason)) => {
-                    println!("Desconectado: {reason}");
-                    return Ok(());
-                }
-                None => return Ok(()),
-            },
-            line = lines.recv() => match line.as_deref().map(str::trim) {
-                Some("convite" | "c") => match &invite_host {
-                    Some(host) => match session.issue_invite(host, DEFAULT_INVITE_TTL_SECS).await {
-                        Ok(inv) => print_invite(&inv),
-                        Err(e) => println!("Não deu para criar o convite: {e:#}"),
-                    },
-                    None => println!("Só o dono da sala emite convites."),
-                },
-                Some("membros" | "m") => print_online(&online),
-                Some("rota" | "r") => match session.route() {
-                    Some(route) => println!("Caminho: {}", describe_route(&route)),
-                    None => println!("Sem caminho ativo."),
-                },
-                Some("sair" | "q") | None => break,
-                Some("") => {}
-                Some(other) => println!("Comando desconhecido: {other}. Use convite, membros, rota ou sair."),
-            },
-            _ = tokio::signal::ctrl_c() => break,
+    let me = core.me;
+    let names = members.clone();
+    let emit = move |ev: RoomEvent| match ev {
+        RoomEvent::Chat(line) if line.from != me => {
+            let who = names
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|v| v.id == line.from)
+                .map_or_else(|| format!("{}…", &line.from.short()[..8]), MemberView::label);
+            println!("{who}: {}", line.text);
         }
-    }
-    session.close().await;
-    Ok(())
-}
-
-fn print_online(online: &[lerri_core::MemberId]) {
-    if online.is_empty() {
-        println!("Ninguém mais online.");
-    } else {
-        let list: Vec<String> = online.iter().map(|m| format!("{}…", m.short())).collect();
-        println!("Online: {}", list.join(", "));
+        RoomEvent::Chat(_) => {}
+        RoomEvent::History(lines) => println!("({} mensagens do histórico local)", lines.len()),
+        RoomEvent::Notice(n) => println!("* {n}"),
+        RoomEvent::Status(Some(s)) => println!("! {s}"),
+        RoomEvent::Status(None) => {}
+        RoomEvent::Members(v) => *names.lock().unwrap() = v,
+        RoomEvent::Invite(inv) => print_invite(&inv),
+    };
+    let exit =
+        room::run(session, core, data_dir.to_path_buf(), invite_host, rx, emit, move |rt| *route.lock().unwrap() = rt).await;
+    match exit {
+        Exit::Closed => Ok(()),
+        Exit::Left => {
+            println!("Você saiu da sala.");
+            Ok(())
+        }
+        Exit::Removed => bail!("você foi removido da sala pelo dono"),
+        Exit::Disconnected(reason) => bail!("desconectado: {reason}"),
     }
 }
 

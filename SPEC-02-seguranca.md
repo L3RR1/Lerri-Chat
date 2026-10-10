@@ -83,6 +83,16 @@ O link é exibido como texto (`lerrichat://...`) e como **QR**. Ele deve trafega
 ### 4.2 Delivery Service (ordenação de commits)
 MLS exige que todos apliquem os commits na mesma ordem. O **relay é o Delivery Service**: para cada epoch, aceita o **primeiro** commit que chegar, repassa a todos e rejeita os concorrentes (o autor reconstrói sobre o novo epoch e reenvia). O relay ordena sem ler — commits são assinados e o conteúdo sensível vai cifrado.
 
+### 4.2.1 Como ficou na Fase 2
+- **Credencial MLS = chave de identidade.** A credencial básica de cada folha é a chave Ed25519 da identidade, e ela mesma assina no MLS. Quem admite confere que a credencial é a chave que assina, e que o `MemberId` dela é quem o relay diz que pediu.
+- **Commits** vão como `PublicMessage` (assinados, sem cifra de conteúdo): o relay vê quem entra e sai, o que ele já sabe pelo roteamento. Mensagens de aplicação vão sempre como `PrivateMessage`, com padding a múltiplos de 32 bytes.
+- **Log de commits no relay** (até 5000 por sala): quem volta informa o epoch local e recebe o que perdeu, na ordem. Não é mensagem offline: é só o estado do grupo. Quem ficar atrás demais ou corromper o estado pede **readição**, que só é aceita para quem já está no grupo (troca da folha, sem convite).
+- **Welcome e pedidos de entrada** ficam guardados no relay até alguém poder tratá-los. Quem pede entrada com convite aguarda até um membro online que conheça `s` aparecer.
+- **`s` dos convites** é distribuído pelo dono ao grupo numa mensagem MLS; os membros só aceitam esse compartilhamento vindo do dono.
+- **Remoção:** o relay só aceita um commit que remove alguém que não saiu por conta própria se ele vier do dono, e então corta a conexão do removido. Os clientes avisam se um commit de remoção vier de outro membro.
+- **Saída:** o membro avisa o relay, que repassa a saída; o primeiro membro online faz o commit de remoção (os outros perdem a disputa pelo epoch, o que é esperado). O dono ainda não pode sair: transferir a posse fica para depois.
+- **Update** periódico a cada 12 h de conexão.
+
 ### 4.3 Mídia (voz/tela/câmera) — SFrame
 - Mídia é cifrada com **SFrame (RFC 9605)**. Cada remetente tem sua própria chave, derivada do grupo pelo **MLS exporter** (`exporter("lerrichat sframe", sender_index, epoch)`). Chave por remetente evita reuso de nonce entre transmissores que compartilham o mesmo grupo.
 - O SFU precisa de um **cabeçalho mínimo em claro** pra rotear: id do stream, camada de simulcast, flag de keyframe, número de sequência. Esse cabeçalho é **autenticado** (entra como AAD no AEAD), mas não é sigiloso. Ele revela metadados de mídia, nunca conteúdo.

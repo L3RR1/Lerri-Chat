@@ -41,9 +41,9 @@ jobs:
             $owner = "sair" | & $exe --data-dir "$t/owner" --create $admin
             if ($LASTEXITCODE -ne 0) { $owner; throw "criar sala falhou" }
             $invite = ($owner | Select-String -Pattern '^lerrichat://join.*').Matches[0].Value
-            $guest = "sair" | & $exe --data-dir "$t/guest" $invite
+            $guest = "sair" | & $exe --data-dir "$t/guest" --cli --join $invite
             if ($LASTEXITCODE -ne 0) { $guest; throw "entrar pelo convite falhou" }
-            $again = "sair" | & $exe --data-dir "$t/intruder" $invite 2>&1
+            $again = "sair" | & $exe --data-dir "$t/intruder" --cli --join $invite 2>&1
             if ($LASTEXITCODE -eq 0 -or -not ($again -match 'foi usado')) { $again; throw "convite reutilizado foi aceito" }
           } finally {
             Stop-Process $relay.Id

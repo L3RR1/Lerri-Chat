@@ -1,7 +1,10 @@
-//! Orquestra rede, mídia e criptografia para a UI (SPEC-01 §3). Na Fase 1:
-//! entrar em salas, emitir convites e acompanhar presença.
+//! Orquestra rede, mídia e criptografia para a UI (SPEC-01 §3): a conexão com
+//! o host da sala ([`Session`]) e a sala em si, com grupo MLS e chat
+//! ([`room`]).
 
+pub mod room;
 pub mod rooms;
+pub mod settings;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,6 +29,8 @@ pub enum Event {
     Offline { member: MemberId },
     /// A conexão com o host caiu (ou foi substituída por outra).
     Disconnected(String),
+    /// Frames do MLS e de membros (tratados por [`room::RoomCore`]).
+    Relay(Frame),
 }
 
 /// Caminho em uso até o host.
@@ -48,6 +53,9 @@ pub struct Session {
     pub role: Role,
     /// Membros online quando entrou (sem contar você).
     pub online: Vec<MemberId>,
+    pub owner: MemberId,
+    /// Último epoch MLS que o relay ordenou.
+    pub relay_epoch: u64,
 }
 
 impl Session {
@@ -74,12 +82,14 @@ impl Session {
             let reply =
                 tokio::time::timeout(REPLY_TIMEOUT, read_frame(&mut recv)).await.context("host não respondeu")??;
             match reply {
-                Some(Frame::Welcome { room, mode, role, online }) => Ok((conn, send, recv, room, mode, role, online)),
+                Some(Frame::Welcome { room, mode, role, online, owner, epoch }) => {
+                    Ok((conn, send, recv, room, mode, role, online, owner, epoch))
+                }
                 Some(Frame::Refused(r)) => Err(anyhow::Error::new(r)),
                 other => bail!("resposta inesperada do host: {other:?}"),
             }
         };
-        let (conn, send, mut recv, room, mode, role, online) = match handshake.await {
+        let (conn, send, mut recv, room, mode, role, online, owner, relay_epoch) = match handshake.await {
             Ok(parts) => parts,
             Err(e) => {
                 endpoint.close().await;
@@ -101,11 +111,20 @@ impl Session {
                         let _ = tx.send(Event::Offline { member });
                     }
                     Ok(Some(reply @ (Frame::InviteRegistered { .. } | Frame::Refused(_)))) => {
-                        if let Some(waiter) = p.lock().unwrap().take() {
-                            let _ = waiter.send(reply);
+                        // Recusa sem ninguém esperando é de um commit: vai para a sala.
+                        let waiter = p.lock().unwrap().take();
+                        match waiter {
+                            Some(w) => {
+                                let _ = w.send(reply);
+                            }
+                            None => {
+                                let _ = tx.send(Event::Relay(reply));
+                            }
                         }
                     }
-                    Ok(Some(other)) => tracing::warn!("frame inesperado do host: {other:?}"),
+                    Ok(Some(other)) => {
+                        let _ = tx.send(Event::Relay(other));
+                    }
                     Ok(None) => break "o host encerrou a sessão".to_string(),
                     Err(e) => break c.close_reason().map_or_else(|| format!("{e:#}"), |r| r.to_string()),
                 }
@@ -124,7 +143,14 @@ impl Session {
             mode,
             role,
             online,
+            owner,
+            relay_epoch,
         })
+    }
+
+    /// Manda um frame ao relay.
+    pub async fn send(&self, frame: &Frame) -> anyhow::Result<()> {
+        write_frame(&mut *self.send.lock().await, frame).await
     }
 
     /// Próximo evento da sala. `None` depois de `Disconnected`.
@@ -164,7 +190,11 @@ impl Session {
         })
     }
 
+    /// Fecha com calma: termina o stream e espera o relay encerrar, para o
+    /// que foi mandado por último (ex.: `Leave`) não se perder.
     pub async fn close(self) {
+        let _ = self.send.lock().await.finish();
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.conn.closed()).await;
         self.conn.close(0u32.into(), b"tchau");
         self.endpoint.close().await;
     }

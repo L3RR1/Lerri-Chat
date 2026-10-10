@@ -1,6 +1,7 @@
 //! Identidade, segredos em repouso e (nas próximas fases) MLS, SFrame e
 //! convites (SPEC-02).
 
+pub mod group;
 pub mod identity;
 pub mod secret_store;
 

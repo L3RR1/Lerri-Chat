@@ -55,6 +55,11 @@ impl Identity {
         self.key.verifying_key()
     }
 
+    /// Semente Ed25519 (32 bytes). Só para o assinante MLS da própria pessoa.
+    pub(crate) fn secret_bytes(&self) -> zeroize::Zeroizing<[u8; 32]> {
+        zeroize::Zeroizing::new(self.key.to_bytes())
+    }
+
     pub fn sign(&self, msg: &[u8]) -> Signature {
         self.key.sign(msg)
     }

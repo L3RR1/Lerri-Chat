@@ -73,12 +73,16 @@ Escopo:
 
 Sobre atalhos: uma chave simétrica de sala (sem MLS) pode existir **só como marco interno de desenvolvimento**, com a chave entregue cifrada por `s` e nunca passando pelo relay. Ela não passa no aceite desta fase, porque não faz rekey na remoção.
 
+Estado: **implementada.** Chat na janela e no terminal (`--cli`), apelido opcional, histórico local opcional (desligado por padrão). Detalhes em `SPEC-02` §4.2.1. Testes: `crates/crypto/src/group.rs` (MLS) e `crates/host/tests/chat.rs` (ponta a ponta com relay real).
+
 Aceite:
-- [ ] Mensagens cifradas; captura no relay é indecifrável.
-- [ ] Relay que emite `t` sem conhecer `s` não consegue entrar no grupo.
-- [ ] Membro removido não lê mensagens posteriores (novo epoch) e tem a conexão derrubada.
-- [ ] Commits concorrentes no mesmo epoch são resolvidos sem divergência de estado.
-- [ ] Nenhum tráfego a domínios de terceiros.
+- [x] Mensagens cifradas; captura no relay é indecifrável. *O cifrado não contém o texto; o relay só guarda commits e nunca recebe chave do grupo.*
+- [x] Relay que emite `t` sem conhecer `s` não consegue entrar no grupo. *Testado: o intruso entra no relay e fica "aguardando admissão" para sempre.*
+- [x] Membro removido não lê mensagens posteriores (novo epoch) e tem a conexão derrubada.
+- [x] Commits concorrentes no mesmo epoch são resolvidos sem divergência de estado. *Testado com três membros disputando a remoção de quem saiu; depois todos trocam mensagens.*
+- [ ] Nenhum tráfego a domínios de terceiros. *Como na Fase 1: garantido pela configuração, falta captura de rede.*
+
+Limitações conhecidas: o dono não pode sair (transferir a posse fica para depois); um membro não-dono consegue fazer commit de remoção de quem saiu (é o fluxo normal) e os clientes alertam se ele remover outra pessoa.
 
 ---
 

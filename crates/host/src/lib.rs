@@ -73,7 +73,7 @@ impl Relay {
         });
         let endpoint =
             lerri_net::bind(EndpointOpts { secret: host_key, port, meet: local_meet, accept: true, portmap: true }).await?;
-        let service = Arc::new(RoomService::new(*endpoint.id().as_bytes(), admin, Some(dir.join("rooms.bin")))?);
+        let service = Arc::new(RoomService::new(*endpoint.id().as_bytes(), admin, Some(dir.join("rooms-v2.bin")))?);
         tokio::spawn(service.clone().serve(endpoint.clone()));
 
         let udp_port = endpoint.bound_sockets().first().map_or(port, SocketAddr::port);

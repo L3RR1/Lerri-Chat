@@ -10,7 +10,29 @@ env:
   MAX_EXE_BYTES: 26214400
 
 jobs:
+  # DLLs do FFmpeg que vão no pacote (D-03). Só recompila quando o script muda.
+  ffmpeg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-min
+          key: ffmpeg-min-${{ hashFiles('scripts/ffmpeg-min.sh') }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 nasm
+          bash scripts/ffmpeg-min.sh ffmpeg-min
+      - run: ls -l ffmpeg-min
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-min
+          path: ffmpeg-min
+
   windows:
+    needs: ffmpeg
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,6 +43,15 @@ jobs:
       # Spikes são experimentos da Fase 0 (o de vídeo depende de FFmpeg em .deps/); ficam fora da CI.
       - run: cargo clippy --workspace --exclude spike-video --exclude spike-p2p --all-targets -- -D warnings
       - run: cargo test --workspace --exclude spike-video --exclude spike-p2p
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-min
+          path: ffmpeg-min
+      - name: DLLs do FFmpeg carregam e têm os decoders
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD\ffmpeg-min;$env:PATH"
+          cargo test -p lerri-media --lib dlls_tem_os_tres_decoders -- --ignored
       - run: cargo build --release -p lerrichat
       - name: Tamanho do binário (RNF-02)
         shell: pwsh
@@ -72,3 +103,36 @@ jobs:
         with:
           name: lerrichat-host-linux
           path: target/release/lerrichat-host
+
+  # O .zip que se manda para os amigos; numa tag v* vira Release.
+  pacote:
+    needs: [windows, linux-host]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: Montar o zip
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          [ "$GITHUB_REF_TYPE" = tag ] || v=$(git rev-parse --short HEAD)
+          mkdir -p LerriChat/ffmpeg
+          cp art/lerrichat-windows/lerrichat.exe pacote/LEIA-ME.txt LerriChat/
+          cp art/ffmpeg-min/*.dll art/ffmpeg-min/LICENCA-FFmpeg.txt LerriChat/ffmpeg/
+          zip -r -9 "LerriChat-$v-windows-x64.zip" LerriChat
+          install -m 755 art/lerrichat-host-linux/lerrichat-host "lerrichat-host-$v-linux-x64"
+          ls -l LerriChat-*.zip lerrichat-host-*
+          echo "V=$v" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LerriChat-${{ env.V }}-windows-x64
+          path: LerriChat
+      - if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            LerriChat-*.zip
+            lerrichat-host-*-linux-x64

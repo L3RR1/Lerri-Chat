@@ -1,0 +1,36 @@
+LERRI CHAT
+==========
+
+Voz, chat, tela e câmera entre amigos, cifrados de ponta a ponta.
+Sem conta e sem instalar: é só abrir o lerrichat.exe.
+
+PRIMEIRA VEZ
+------------
+1. Extraia a pasta LerriChat inteira (não abra de dentro do .zip).
+2. Abra o lerrichat.exe. O Windows vai mostrar "O Windows protegeu o
+   computador", porque o app não é assinado: clique em "Mais informações"
+   e depois em "Executar assim mesmo". Isso só acontece na primeira vez.
+3. Se o Windows perguntar se o Lerri Chat pode usar a rede, permita.
+
+ENTRAR NUMA SALA
+----------------
+Cole o convite que te mandaram (começa com lerrichat://join) e clique em
+Entrar. Cada convite serve para uma pessoa só e vale por 24 horas.
+Depois da primeira vez, clicar num convite já abre o app.
+
+CRIAR UMA SALA
+--------------
+"Criar sala x1" cria a sala neste PC e mostra o convite (link e QR) para
+mandar a quem você quer chamar.
+
+O QUE TEM NA PASTA
+------------------
+lerrichat.exe   o app
+ffmpeg\         usado para assistir telas e câmeras dos outros. Sem essa
+                pasta, todo o resto funciona.
+
+Seus dados (identidade e salas) ficam em %APPDATA%\LerriChat; a
+identidade é cifrada para o seu usuário do Windows. Para remover o app,
+apague esta pasta e essa.
+
+Mais informações e código: https://github.com/L3RR1/Lerri-Chat

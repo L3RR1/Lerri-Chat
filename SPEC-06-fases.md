@@ -130,7 +130,7 @@ Aceite:
 - [x] Encoder certo escolhido automaticamente por GPU. *Enumera os MFTs de hardware do Media Foundation. Na RX 6700 XT escolhe AMDh265Encoder / AMDh264Encoder. Só testado em AMD.*
 - [ ] Receptor sem decode HEVC entra na sala e o transmissor desce de codec sozinho. *Implementado: cada membro anuncia o que decodifica pelo MLS, o transmissor renegocia a cada 250 ms e recria o encoder com keyframe. A negociação e os dois encoders (HEVC e H.264) estão testados; falta um receptor real sem HEVC.*
 
-Fora desta entrega: simulcast e AV1 SVC (por enquanto o relay pula quadros para quem está atrasado e retoma no keyframe), OpenH264 por software (sem encoder de hardware não dá para compartilhar), compartilhar uma janela só (hoje é o monitor inteiro), várias telas assistidas ao mesmo tempo, e um FFmpeg mínimo para distribuir (hoje vão ao lado do `.exe` as DLLs do build LGPL completo: `avcodec`, `avutil`, `swresample`, ~95 MB).
+Fora desta entrega: simulcast e AV1 SVC (por enquanto o relay pula quadros para quem está atrasado e retoma no keyframe), OpenH264 por software (sem encoder de hardware não dá para compartilhar), compartilhar uma janela só (hoje é o monitor inteiro), várias telas assistidas ao mesmo tempo. O FFmpeg mínimo para distribuir entrou depois da Fase 6: `scripts/ffmpeg-min.sh` compila só `avcodec` + `avutil` com os decoders H.264/HEVC/AV1 e os hwaccels D3D11VA, sem bibliotecas externas, e a CI monta o zip (`lerrichat.exe` + `ffmpeg` + LEIA-ME) e, numa tag `v*`, a Release.
 
 ---
 

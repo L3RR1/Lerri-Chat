@@ -64,6 +64,8 @@ Medidos num Ryzen 5 5600 + RX 6700 XT, build release, processo real:
 
 ## Usar
 
+**Baixar:** pegue o `LerriChat-…-windows-x64.zip` em [Releases](https://github.com/L3RR1/Lerri-Chat/releases), extraia a pasta e abra o `lerrichat.exe`. Não instala nada.
+
 **Primeira vez:** o `.exe` não é assinado, então o Windows mostra "O Windows protegeu o computador". Clique em **Mais informações** → **Executar assim mesmo**. Se for criar sala x1, permita o acesso à rede quando o Windows perguntar.
 
 Abra o `lerrichat.exe`:
@@ -79,7 +81,7 @@ Na sala, a barra de baixo controla voz, tela e câmera. Quem compartilha ganha u
   <img src="docs/sobre.png" width="410" alt="Tela Sobre">
 </p>
 
-Para **assistir** telas e câmeras, o `lerrichat.exe` precisa das DLLs do FFmpeg (build LGPL: `avcodec-63.dll`, `avutil-61.dll`, `swresample-7.dll`) ao lado dele ou numa pasta `ffmpeg` ao lado dele. Sem elas, todo o resto funciona e a sala avisa. Compartilhar não precisa delas.
+Para **assistir** telas e câmeras, o app usa as DLLs do FFmpeg da pasta `ffmpeg` ao lado do `.exe` (`avcodec-63.dll` e `avutil-61.dll`, LGPL). O zip já vem com elas, num build mínimo só com o decode de H.264, HEVC e AV1 pela GPU ([`scripts/ffmpeg-min.sh`](scripts/ffmpeg-min.sh)). Sem elas, todo o resto funciona e a sala avisa. Compartilhar não precisa delas.
 
 ### Servidor (Proxmox, VPS)
 
@@ -110,7 +112,10 @@ Requer Rust stable e, no Windows, as Build Tools do Visual Studio (MSVC + Window
 cargo test --workspace --exclude spike-video --exclude spike-p2p
 cargo build --release -p lerrichat          # target/release/lerrichat.exe
 cargo build --release -p lerrichat-host     # relay headless (Linux)
+bash scripts/ffmpeg-min.sh ffmpeg-min       # DLLs do FFmpeg (Linux com mingw-w64)
 ```
+
+A CI monta o zip a cada push; uma tag `v*` publica a Release.
 
 ## Como funciona por dentro
 
@@ -133,7 +138,7 @@ O projeto é guiado por especificação: primeiro a spec, depois o código.
 
 ## Estado
 
-Fases 0 a 6 implementadas: fundação, salas e convites, chat E2EE, voz, tela, câmera e interface. Testado na mesma máquina e na mesma rede; falta o teste entre dois PCs em redes diferentes e no servidor. Próximos passos: FFmpeg mínimo (hoje as DLLs do build completo somam ~95 MB), simulcast, push-to-talk, escolha de dispositivo de áudio. Detalhes e pendências em [`SPEC-06`](SPEC-06-fases.md).
+Fases 0 a 6 implementadas: fundação, salas e convites, chat E2EE, voz, tela, câmera e interface. Testado na mesma máquina e na mesma rede; falta o teste entre dois PCs em redes diferentes e no servidor. Próximos passos: simulcast, push-to-talk, escolha de dispositivo de áudio. Detalhes e pendências em [`SPEC-06`](SPEC-06-fases.md).
 
 ## Escopo de uso
 

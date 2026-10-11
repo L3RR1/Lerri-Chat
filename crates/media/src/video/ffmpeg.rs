@@ -287,3 +287,19 @@ impl Drop for Decoder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A CI roda com as DLLs de `scripts/ffmpeg-min.sh` no PATH.
+    #[test]
+    #[ignore = "precisa das DLLs do FFmpeg"]
+    fn dlls_tem_os_tres_decoders() {
+        let ff = ffmpeg().unwrap();
+        for id in [AVCodecID::AV_CODEC_ID_H264, AVCodecID::AV_CODEC_ID_HEVC, AVCodecID::AV_CODEC_ID_AV1] {
+            // SAFETY: só consulta a tabela de decoders.
+            assert!(!unsafe { (ff.avcodec_find_decoder)(id) }.is_null(), "sem decoder {id:?}");
+        }
+    }
+}

@@ -180,6 +180,8 @@ impl Eq for OutgoingHandle {}
 pub enum PublishSource {
     /// O monitor (`None`: o principal).
     Screen { monitor: Option<isize> },
+    /// Uma janela só; quem assiste vê como a tela.
+    Window { hwnd: isize },
     /// A câmera (`None`: a primeira).
     Camera { device: Option<String> },
 }
@@ -187,7 +189,7 @@ pub enum PublishSource {
 impl PublishSource {
     pub fn video(&self) -> Video {
         match self {
-            PublishSource::Screen { .. } => Video::Screen,
+            PublishSource::Screen { .. } | PublishSource::Window { .. } => Video::Screen,
             PublishSource::Camera { .. } => Video::Camera,
         }
     }
@@ -1468,6 +1470,7 @@ impl Media {
             PublishSource::Screen { monitor } => crate::video::Source::Screen {
                 monitor: monitor.or_else(|| caps.monitors.first().map(|m| m.handle)).ok_or_else(|| anyhow::anyhow!("nenhum monitor"))?,
             },
+            PublishSource::Window { hwnd } => crate::video::Source::Window { hwnd },
             PublishSource::Camera { device } => {
                 anyhow::ensure!(!caps.cameras.is_empty(), "nenhuma câmera encontrada");
                 crate::video::Source::Camera { device }

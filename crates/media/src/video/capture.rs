@@ -6,6 +6,7 @@
 //! uma rajada de mudanças vira um quadro só, e o último estado de uma tela
 //! que parou nunca se perde.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,13 +15,18 @@ use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{LPARAM, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW};
 use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindowVisible, WS_EX_TOOLWINDOW,
+};
 use windows::core::{BOOL, Interface};
 
 use super::d3d::D3D;
@@ -63,6 +69,67 @@ pub fn monitors() -> Vec<Monitor> {
     list
 }
 
+/// Uma janela que dá para compartilhar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Window {
+    pub handle: isize,
+    pub title: String,
+}
+
+/// Janelas de aplicativo abertas, na ordem do Windows (a da frente primeiro):
+/// visíveis, com título, sem dono, fora as de ferramenta, as ocultas pelo
+/// sistema (abas de outras áreas de trabalho, apps suspensos) e as deste
+/// processo.
+pub fn windows() -> Vec<Window> {
+    unsafe extern "system" fn each(h: HWND, data: LPARAM) -> BOOL {
+        // SAFETY: `data` é o `Vec` passado abaixo, vivo durante a enumeração.
+        let list = unsafe { &mut *(data.0 as *mut Vec<Window>) };
+        // SAFETY: consultas sobre uma janela que o próprio Windows enumerou.
+        unsafe {
+            if !IsWindowVisible(h).as_bool() || GetWindow(h, GW_OWNER).is_ok_and(|o| !o.is_invalid()) {
+                return true.into();
+            }
+            if GetWindowLongPtrW(h, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 {
+                return true.into();
+            }
+            let mut cloaked = 0u32;
+            let _ = DwmGetWindowAttribute(h, DWMWA_CLOAKED, (&raw mut cloaked).cast(), size_of::<u32>() as u32);
+            if cloaked != 0 {
+                return true.into();
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, Some(&mut pid));
+            if pid == std::process::id() {
+                return true.into();
+            }
+            let len = GetWindowTextLengthW(h);
+            if len <= 0 {
+                return true.into();
+            }
+            let mut buf = vec![0u16; len as usize + 1];
+            let n = GetWindowTextW(h, &mut buf);
+            let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+            if !title.trim().is_empty() && title != "Program Manager" {
+                list.push(Window { handle: h.0 as isize, title });
+            }
+        }
+        true.into()
+    }
+    let mut list: Vec<Window> = Vec::new();
+    // SAFETY: callback acima; `list` vive até o fim da chamada.
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut list as *mut _ as isize));
+    }
+    list
+}
+
+/// O que capturar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Monitor(isize),
+    Window(isize),
+}
+
 /// Último quadro capturado, esperando o encoder.
 pub struct Latest {
     pub texture: ID3D11Texture2D,
@@ -75,6 +142,8 @@ pub struct Latest {
 pub struct Shared {
     pub latest: Mutex<Option<Latest>>,
     pub signal: Condvar,
+    /// A janela capturada foi fechada (ou o monitor sumiu).
+    pub closed: AtomicBool,
 }
 
 // SAFETY: texturas D3D11 de um dispositivo free-threaded com proteção multithread.
@@ -82,6 +151,10 @@ unsafe impl Send for Shared {}
 unsafe impl Sync for Shared {}
 
 impl Shared {
+    pub fn closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
+
     /// Espera um quadro novo por até `timeout`.
     pub fn wait_fresh(&self, timeout: Duration) -> bool {
         let guard = self.latest.lock().unwrap();
@@ -103,11 +176,16 @@ impl Capture {
         GraphicsCaptureSession::IsSupported().unwrap_or(false)
     }
 
-    pub fn start(d3d: &D3D, monitor: isize) -> anyhow::Result<Self> {
+    pub fn start(d3d: &D3D, target: Target) -> anyhow::Result<Self> {
         anyhow::ensure!(Self::is_supported(), "este Windows não tem a captura de tela moderna (WGC)");
         let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(HMONITOR(monitor as *mut _)) }
-            .context("monitor não pode ser capturado")?;
+        // SAFETY: identificadores vindos de `monitors()`/`windows()`; o WGC
+        // recusa os que não valem mais.
+        let item: GraphicsCaptureItem = match target {
+            Target::Monitor(m) => unsafe { interop.CreateForMonitor(HMONITOR(m as *mut _)) }.context("monitor não pode ser capturado")?,
+            Target::Window(w) => unsafe { interop.CreateForWindow(HWND(w as *mut _)) }
+                .context("essa janela não pode ser capturada (fechou ou é protegida)")?,
+        };
         let size = item.Size()?;
         let winrt_device: IDirect3DDevice = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&d3d.device.cast::<IDXGIDevice>()?)? }.cast()?;
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
@@ -116,7 +194,13 @@ impl Capture {
             2,
             size,
         )?;
-        let shared = Arc::new(Shared { latest: Mutex::new(None), signal: Condvar::new() });
+        let shared = Arc::new(Shared { latest: Mutex::new(None), signal: Condvar::new(), closed: AtomicBool::new(false) });
+        let s = shared.clone();
+        item.Closed(&TypedEventHandler::new(move |_, _| {
+            s.closed.store(true, Ordering::Relaxed);
+            s.signal.notify_all();
+            Ok(())
+        }))?;
         let (s, dev) = (shared.clone(), d3d.clone());
         let current = Mutex::new((size.Width, size.Height));
         pool.FrameArrived(&TypedEventHandler::new(move |pool: windows::core::Ref<Direct3D11CaptureFramePool>, _| {
@@ -180,6 +264,9 @@ mod tests {
     fn list_monitors() {
         for m in super::monitors() {
             println!("{m:?}");
+        }
+        for w in super::windows() {
+            println!("{w:?}");
         }
     }
 }

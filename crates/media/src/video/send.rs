@@ -11,7 +11,7 @@ use lerri_core::media::Codec;
 use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_NV12;
 
-use super::capture::Capture;
+use super::capture::{Capture, Target};
 use super::d3d::{Colors, Converter, D3D, fit};
 use super::encode::{Encoder, OnFrame};
 
@@ -49,8 +49,8 @@ pub struct Sender {
 }
 
 impl Sender {
-    pub fn start(d3d: &D3D, monitor: isize, codec: Codec, fps: u32, bitrate: u32, on_frame: OnFrame) -> anyhow::Result<Self> {
-        let capture = Capture::start(d3d, monitor)?;
+    pub fn start(d3d: &D3D, target: Target, codec: Codec, fps: u32, bitrate: u32, on_frame: OnFrame) -> anyhow::Result<Self> {
+        let capture = Capture::start(d3d, target)?;
         let size = target_size(capture.size);
         let encoder = Encoder::new(d3d, codec, size, fps, bitrate, on_frame.clone())?;
         let ring = (0..RING).map(|_| d3d.texture(size.0, size.1, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET)).collect::<Result<_, _>>()?;
@@ -93,6 +93,7 @@ impl Sender {
                 std::thread::sleep(interval - since);
             }
         }
+        anyhow::ensure!(!self.capture.shared.closed(), "a janela compartilhada foi fechada");
         if !keyframe && !self.capture.shared.wait_fresh(max_wait) {
             return Ok(false);
         }
@@ -164,7 +165,7 @@ mod hw_tests {
         let monitor = capture::monitors().into_iter().next().expect("um monitor");
         let frames: Arc<Mutex<Vec<(Instant, EncodedFrame)>>> = Arc::default();
         let f = frames.clone();
-        let mut s = Sender::start(d3d, monitor.handle, codec, 60, 4_000_000, Arc::new(move |e| {
+        let mut s = Sender::start(d3d, Target::Monitor(monitor.handle), codec, 60, 4_000_000, Arc::new(move |e| {
             f.lock().unwrap().push((Instant::now(), e));
         }))
         .unwrap();

@@ -24,6 +24,8 @@ struct State {
     windows: HashMap<Video, (isize, Rect)>,
     minimized: bool,
     monitors: Vec<isize>,
+    /// Janelas do menu "O que compartilhar".
+    share_windows: Vec<isize>,
     cameras: Vec<String>,
 }
 
@@ -38,8 +40,22 @@ pub fn set_devices(monitors: Vec<isize>, cameras: Vec<String>) {
     });
 }
 
-pub fn monitor(index: usize) -> Option<isize> {
-    STATE.with_borrow(|s| s.monitors.get(index).copied())
+/// Janelas mostradas no menu "O que compartilhar", depois dos monitores.
+pub fn set_windows(windows: Vec<isize>) {
+    STATE.with_borrow_mut(|s| s.share_windows = windows);
+}
+
+/// Item `index` do menu "O que compartilhar".
+pub enum ShareTarget {
+    Monitor(Option<isize>),
+    Window(isize),
+}
+
+pub fn share_target(index: usize) -> ShareTarget {
+    STATE.with_borrow(|s| match index.checked_sub(s.monitors.len()) {
+        None => ShareTarget::Monitor(s.monitors.get(index).copied()),
+        Some(w) => s.share_windows.get(w).map_or(ShareTarget::Monitor(None), |h| ShareTarget::Window(*h)),
+    })
 }
 
 pub fn camera(index: usize) -> Option<String> {

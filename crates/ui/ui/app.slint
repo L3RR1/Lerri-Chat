@@ -522,6 +522,8 @@ component DeviceMenu inherits Rectangle {
     in property <[string]> model;
     in property <string> title;
     in-out property <int> current-index;
+    // Antes de abrir: quem usa pode atualizar a lista (ex.: janelas abertas).
+    callback opened();
     property <length> item-height: 34px;
 
     width: 36px;
@@ -530,12 +532,15 @@ component DeviceMenu inherits Rectangle {
         width: 100%;
         icon: @image-url("icons/chevron-up.png");
         label: root.title + ": " + root.model[root.current-index];
-        clicked => { popup.show(); }
+        clicked => {
+            root.opened();
+            popup.show();
+        }
     }
     popup := PopupWindow {
         x: 0px;
-        y: -(root.model.length * root.item-height + 46px);
-        width: 260px;
+        y: -(root.model.length * (root.item-height + 2px) + 46px);
+        width: 340px;
         Rectangle {
             background: Theme.surface-raised;
             border-radius: Theme.r-control + 2px;
@@ -578,6 +583,10 @@ component DeviceMenu inherits Rectangle {
                             overflow: elide;
                         }
                     }
+                    accessible-role: list-item;
+                    accessible-label: item;
+                    accessible-item-selected: i == root.current-index;
+                    accessible-action-default => { root.current-index = i; }
                     ita := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.current-index = i; }
@@ -668,6 +677,13 @@ component Select inherits Rectangle {
                             vertical-alignment: center;
                             overflow: elide;
                         }
+                    }
+                    accessible-role: list-item;
+                    accessible-label: item;
+                    accessible-item-selected: i == root.current-index;
+                    accessible-action-default => {
+                        root.current-index = i;
+                        root.selected(i);
                     }
                     ita := TouchArea {
                         mouse-cursor: pointer;
@@ -1030,6 +1046,9 @@ component RoomView inherits VerticalLayout {
     in property <string> watch-problem;
     in property <[string]> monitors;
     in-out property <int> monitor-index;
+    // As primeiras `monitor-count` opções do menu são telas; o resto, janelas.
+    in property <int> monitor-count;
+    callback share-menu-opened();
     in property <string> watching-label;
     callback share-screen();
     callback stop-screen();
@@ -1672,18 +1691,19 @@ component RoomView inherits VerticalLayout {
                 HorizontalLayout {
                     spacing: 4px;
                     if !root.screen-sharing: Btn {
-                        text: "Compartilhar tela";
+                        text: root.monitor-index >= root.monitor-count ? "Compartilhar janela" : "Compartilhar tela";
                         icon: @image-url("icons/screen-share.png");
                         tonal: true;
                         enabled: root.admitted && root.can-share;
                         clicked => { root.share-screen(); }
                     }
-                    if !root.screen-sharing && root.monitors.length > 1: DeviceMenu {
-                        title: "Monitor";
+                    if !root.screen-sharing && root.can-share: DeviceMenu {
+                        title: "O que compartilhar";
                         model: root.monitors;
                         current-index <=> root.monitor-index;
+                        opened => { root.share-menu-opened(); }
                     }
-                    if root.screen-sharing: Btn { text: "Parar a tela"; icon: @image-url("icons/screen-share-off.png"); danger: true; clicked => { root.stop-screen(); } }
+                    if root.screen-sharing: Btn { text: root.monitor-index >= root.monitor-count ? "Parar de compartilhar" : "Parar a tela"; icon: @image-url("icons/screen-share-off.png"); danger: true; clicked => { root.stop-screen(); } }
                 }
 
                 HorizontalLayout {
@@ -1719,7 +1739,7 @@ component RoomView inherits VerticalLayout {
                     Chip {
                         icon: @image-url("icons/screen-share.png");
                         tone: Theme.violet-bright;
-                        text: "Tela no ar, " + (root.screen-watchers == 0 ? "ninguém assistindo" : root.screen-watchers == 1 ? "1 assistindo" : root.screen-watchers + " assistindo");
+                        text: (root.monitor-index >= root.monitor-count ? "Janela no ar, " : "Tela no ar, ") + (root.screen-watchers == 0 ? "ninguém assistindo" : root.screen-watchers == 1 ? "1 assistindo" : root.screen-watchers + " assistindo");
                     }
                 }
                 if root.camera-on: VerticalLayout {
@@ -1905,6 +1925,8 @@ export component AppWindow inherits Window {
     in property <string> watch-problem;
     in property <[string]> monitors;
     in-out property <int> monitor-index;
+    in property <int> monitor-count;
+    callback share-menu-opened();
     in property <string> watching-label;
     out property <length> video-x: room-view.video-x;
     out property <length> video-y: room-view.video-y;
@@ -2056,6 +2078,8 @@ export component AppWindow inherits Window {
                 watch-problem: root.watch-problem;
                 monitors: root.monitors;
                 monitor-index <=> root.monitor-index;
+                monitor-count: root.monitor-count;
+                share-menu-opened => { root.share-menu-opened(); }
                 watching-label: root.watching-label;
                 camera-on: root.camera-on;
                 camera-info: root.camera-info;

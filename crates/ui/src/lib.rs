@@ -154,6 +154,8 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         a.save_settings();
     });
     let a = app.clone();
+    ui.on_share_menu_opened(move || refresh_share_targets(&a.ui()));
+    let a = app.clone();
     ui.on_audio_settings_opened(move || a.refresh_audio_devices());
     let a = app.clone();
     ui.on_input_changed(move |_| a.send_audio_choice());
@@ -173,8 +175,11 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     ui.on_change_ptt_key(move || a.capture_ptt_key());
     let a = app.clone();
     ui.on_share_screen(move || {
-        let monitor = video::monitor(a.ui().get_monitor_index().max(0) as usize);
-        a.send(Command::Publish { source: PublishSource::Screen { monitor }, gpu: true });
+        let source = match video::share_target(a.ui().get_monitor_index().max(0) as usize) {
+            video::ShareTarget::Monitor(monitor) => PublishSource::Screen { monitor },
+            video::ShareTarget::Window(hwnd) => PublishSource::Window { hwnd },
+        };
+        a.send(Command::Publish { source, gpu: true });
     });
     let a = app.clone();
     ui.on_stop_screen(move || a.send(Command::Unpublish(Video::Screen)));
@@ -629,9 +634,11 @@ async fn run_room(
                         info.monitors.iter().map(|(h, _)| *h).collect(),
                         info.cameras.iter().map(|(id, _)| id.clone()).collect(),
                     );
-                    let names: Vec<SharedString> = info.monitors.iter().map(|(_, n)| n.clone().into()).collect();
+                    let names: Vec<SharedString> = info.monitors.iter().map(|(_, n)| format!("Tela inteira: {n}").into()).collect();
+                    ui.set_monitor_count(names.len() as i32);
                     ui.set_monitors(ModelRc::new(VecModel::from(names)));
                     ui.set_monitor_index(0);
+                    video::set_windows(Vec::new());
                     let cams: Vec<SharedString> = info.cameras.iter().map(|(_, n)| n.clone().into()).collect();
                     ui.set_cameras(ModelRc::new(VecModel::from(cams)));
                     ui.set_camera_index(0);
@@ -771,6 +778,30 @@ fn push_view(ui: &Weak<AppWindow>, v: &View) {
             });
         }
     });
+}
+
+/// Janelas abertas no menu "O que compartilhar", depois das telas inteiras.
+/// Refeito a cada abertura do menu (janelas abrem e fecham); a escolha fica
+/// se a janela ainda existe.
+fn refresh_share_targets(ui: &AppWindow) {
+    /// Mais que isso não cabe no menu, que abre para cima a partir da barra.
+    const MAX_WINDOWS: usize = 12;
+    let monitors = ui.get_monitor_count().max(0) as usize;
+    let mut names: Vec<SharedString> = ui.get_monitors().iter().take(monitors).collect();
+    let previous = match video::share_target(ui.get_monitor_index().max(0) as usize) {
+        video::ShareTarget::Window(h) => Some(h),
+        video::ShareTarget::Monitor(_) => None,
+    };
+    let windows: Vec<_> = lerri_media::video::capture::windows().into_iter().take(MAX_WINDOWS).collect();
+    names.extend(windows.iter().map(|w| SharedString::from(format!("Janela: {}", w.title))));
+    let keep = previous.and_then(|h| windows.iter().position(|w| w.handle == h));
+    video::set_windows(windows.iter().map(|w| w.handle).collect());
+    ui.set_monitors(ModelRc::new(VecModel::from(names)));
+    match keep {
+        Some(i) => ui.set_monitor_index((monitors + i) as i32),
+        None if previous.is_some() => ui.set_monitor_index(0),
+        None => {}
+    }
 }
 
 /// Nome no topo da área de vídeo do tipo; vazio esconde a área.

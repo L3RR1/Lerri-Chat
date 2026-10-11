@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use lerri_core::media::Codec;
 use lerri_media::screen::{Frame, Gap, RateControl, Reorder};
 use lerri_media::video::camera::{CameraDevice, CameraSender};
-use lerri_media::video::capture::Monitor;
+use lerri_media::video::capture::{Monitor, Target};
 use lerri_media::video::d3d::D3D;
 use lerri_media::video::encode::{self, EncodedFrame};
 use lerri_media::video::ffmpeg::{self, Decoder};
@@ -58,6 +58,8 @@ pub fn probe() -> Caps {
 #[derive(Debug, Clone)]
 pub enum Source {
     Screen { monitor: isize },
+    /// Uma janela só (vai como "tela" para quem assiste).
+    Window { hwnd: isize },
     /// `None`: a primeira câmera.
     Camera { device: Option<String> },
 }
@@ -72,7 +74,8 @@ impl Active {
     fn start(source: &Source, codec: Codec, bitrate: u32, on_frame: encode::OnFrame) -> anyhow::Result<Self> {
         let d3d = D3D::new()?;
         Ok(match source {
-            Source::Screen { monitor } => Active::Screen(Sender::start(&d3d, *monitor, codec, FPS, bitrate, on_frame)?),
+            Source::Screen { monitor } => Active::Screen(Sender::start(&d3d, Target::Monitor(*monitor), codec, FPS, bitrate, on_frame)?),
+            Source::Window { hwnd } => Active::Screen(Sender::start(&d3d, Target::Window(*hwnd), codec, FPS, bitrate, on_frame)?),
             Source::Camera { device } => {
                 Active::Camera(CameraSender::start(&d3d, device.as_deref(), codec, bitrate, on_frame)?)
             }
@@ -152,7 +155,7 @@ impl GpuShare {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let c = ctl.clone();
         let name = match source {
-            Source::Screen { .. } => "tela",
+            Source::Screen { .. } | Source::Window { .. } => "tela",
             Source::Camera { .. } => "câmera",
         };
         let thread =
@@ -203,7 +206,7 @@ fn share_loop(
 ) {
     encode::init_mf();
     let mut rc = match source {
-        Source::Screen { .. } => RateControl::default(),
+        Source::Screen { .. } | Source::Window { .. } => RateControl::default(),
         Source::Camera { .. } => RateControl::camera(),
     };
     let o = out.clone();

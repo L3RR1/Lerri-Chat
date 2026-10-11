@@ -180,6 +180,7 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         // Medido aqui e não no .slint: lá a largura entra no próprio layout (loop).
         let window = ui.window();
         ui.set_narrow((window.size().width as f32 / window.scale_factor()) < 1000.0);
+        ui.set_reduce_motion(!animations_enabled());
         for change in video::follow(&ui) {
             match change {
                 video::Change::Resized { window, size } => a.send(Command::VideoResize { window, size }),
@@ -677,6 +678,7 @@ fn push_view(ui: &Weak<AppWindow>, v: &View) {
     let _ = ui.upgrade_in_event_loop(move |ui| {
         let grew = ui.get_chat().row_count() != chat.len();
         ui.set_chat(ModelRc::new(VecModel::from(chat)));
+        ui.set_anyone_speaking(members.iter().any(|m| m.speaking));
         ui.set_members(ModelRc::new(VecModel::from(members)));
         ui.set_log(ModelRc::new(VecModel::from(log)));
         if grew {
@@ -721,3 +723,18 @@ fn explain(e: &anyhow::Error) -> String {
 }
 
 use slint::Model as _;
+
+/// "Efeitos de animação" do Windows (Acessibilidade > Efeitos visuais).
+#[cfg(windows)]
+fn animations_enabled() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
+    let mut on: i32 = 1;
+    // SAFETY: SPI_GETCLIENTAREAANIMATION escreve um BOOL no ponteiro dado.
+    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut on).cast(), 0) };
+    ok == 0 || on != 0
+}
+
+#[cfg(not(windows))]
+fn animations_enabled() -> bool {
+    true
+}

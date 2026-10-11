@@ -237,13 +237,54 @@ component Chip inherits Rectangle {
     }
 }
 
-// Avatar com a inicial. Falando: anel roxo (estático; SPEC-05). O ponto no
-// canto diz se está online.
+// Onda que sai do avatar de quem fala: um anel roxo que cresce e some. Existe
+// só enquanto a pessoa fala, então parado nada redesenha (SPEC-05 §6).
+component Ripple inherits Rectangle {
+    in property <length> base;
+    // Defasagem entre 0 e 1: duas ondas, uma no meio do caminho da outra.
+    in property <float> offset;
+    // Quadro do relógio da sala (30 fps, só enquanto alguém fala).
+    in property <int> tick;
+    property <float> phase: mod(root.tick / 36 + root.offset, 1);
+    width: root.base + 20px * root.phase;
+    height: self.width;
+    border-radius: self.width / 2;
+    border-width: 2px;
+    border-color: Theme.violet-bright;
+    opacity: 0.85 * (1 - root.phase);
+}
+
+// Forma de onda ao lado do nome de quem fala: barras roxas numa senoide
+// que corre da esquerda para a direita.
+component Waveform inherits HorizontalLayout {
+    in property <bool> still;
+    in property <int> tick;
+    // Milissegundos de "tempo de onda" (o relógio anda a 30 fps).
+    property <float> t: root.tick * 33;
+    spacing: 2px;
+    alignment: center;
+    for i in 5: VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: 3px;
+            // Duas senoides somadas, defasadas por barra: parece fala, não metrônomo.
+            height: root.still ? (i == 2 ? 14px : 9px)
+                : 4px + 12px * (0.5 + 0.3 * sin((root.t / 260 - i * 0.9) * 1rad) + 0.2 * sin((root.t / 170 + i * 1.7) * 1rad));
+            border-radius: 1.5px;
+            background: Theme.violet-bright;
+        }
+    }
+}
+
+// Avatar com a inicial. Falando: ondas roxas saindo dele (ou um anel parado,
+// com animações do Windows desligadas). O ponto no canto diz se está online.
 component Avatar inherits Rectangle {
     in property <string> initial;
     in property <bool> me;
     in property <bool> online: true;
     in property <bool> speaking;
+    in property <bool> still;
+    in property <int> tick;
     in property <bool> show-presence;
     in property <length> size: 32px;
     width: root.size + 6px;
@@ -252,6 +293,8 @@ component Avatar inherits Rectangle {
     border-width: root.speaking ? 2px : 0px;
     border-color: Theme.violet-bright;
     background: root.speaking ? Theme.violet-glow : transparent;
+    if root.speaking && !root.still: Ripple { base: root.size + 6px; offset: 0; tick: root.tick; x: (root.width - self.width) / 2; y: (root.height - self.height) / 2; }
+    if root.speaking && !root.still: Ripple { base: root.size + 6px; offset: 0.5; tick: root.tick; x: (root.width - self.width) / 2; y: (root.height - self.height) / 2; }
     Rectangle {
         width: root.size;
         height: root.size;
@@ -899,6 +942,18 @@ component RoomView inherits VerticalLayout {
     property <bool> show-addresses;
     property <bool> admitted: root.room-status == "";
     in property <bool> narrow;
+    // "Efeitos de animação" desligados no Windows: ondas viram anel parado.
+    in property <bool> reduce-motion;
+    // Alguém falando agora: liga o relógio das ondas.
+    in property <bool> anyone-speaking;
+    property <int> wave-tick;
+    // Um relógio só para todas as ondas, a 30 fps (SPEC-05 §6): a 165 Hz do
+    // monitor, o renderer software gastaria quase meio núcleo.
+    Timer {
+        interval: 33ms;
+        running: root.anyone-speaking && !root.reduce-motion;
+        triggered => { root.wave-tick += 1; }
+    }
 
     public function scroll-to-end() {
         chat-sv.content-y = min(0px, chat-sv.visible-height - chat-sv.content-height);
@@ -1244,7 +1299,7 @@ component RoomView inherits VerticalLayout {
                             spacing: 10px;
                             VerticalLayout {
                                 alignment: center;
-                                Avatar { initial: m.initial; me: m.me; online: m.online; speaking: m.speaking; show-presence: true; size: 32px; }
+                                Avatar { initial: m.initial; me: m.me; online: m.online; speaking: m.speaking; still: root.reduce-motion; tick: root.wave-tick; show-presence: true; size: 32px; }
                             }
                             VerticalLayout {
                                 alignment: center;
@@ -1260,15 +1315,16 @@ component RoomView inherits VerticalLayout {
                                     wrap: word-wrap;
                                 }
                             }
-                            if m.in-voice: VerticalLayout {
+                            if m.in-voice && !m.speaking: VerticalLayout {
                                 alignment: center;
                                 Icon {
                                     source: @image-url("icons/microphone.png");
-                                    colorize: m.speaking ? Theme.violet-bright : Theme.text-mute;
+                                    colorize: Theme.text-mute;
                                     width: 16px;
                                     height: 16px;
                                 }
                             }
+                            if m.speaking: Waveform { still: root.reduce-motion; tick: root.wave-tick; }
                         }
                         if ((m.sharing || m.camera) && !m.me && root.watch-problem == "") || (root.is-owner && !m.me && !m.waiting && root.confirm-remove != i): HorizontalLayout {
                             spacing: 6px;
@@ -1599,6 +1655,8 @@ export component AppWindow inherits Window {
     in property <bool> is-x1;
     // Janela estreita (o Rust confere a cada 150 ms): a voz fica só com ícones.
     in property <bool> narrow;
+    in property <bool> reduce-motion;
+    in property <bool> anyone-speaking;
     in property <string> room-status;
     in property <string> route-text;
     in property <int> route-quality;
@@ -1736,6 +1794,8 @@ export component AppWindow inherits Window {
                 room-info: root.room-info;
                 is-x1: root.is-x1;
                 narrow: root.narrow;
+                reduce-motion: root.reduce-motion;
+                anyone-speaking: root.anyone-speaking;
                 room-status: root.room-status;
                 route-text: root.route-text;
                 route-quality: root.route-quality;

@@ -1,6 +1,6 @@
 # SPEC-05 — Design System
 
-Status: **Implementado na Fase 6** · Depende de: SPEC-00
+Status: **Implementado na Fase 6, refinado depois dela** · Depende de: SPEC-00
 
 A interface segue a **mesma linha espiritual do LerriNFC**: fundo escuro quase-preto com viés arroxeado, acento roxo vivo, estética "lab/ferramenta" enxuta.
 
@@ -10,8 +10,9 @@ A interface segue a **mesma linha espiritual do LerriNFC**: fundo escuro quase-p
 
 1. **Escuro de verdade.** Fundo quase-preto arroxeado; nada de cinza "dark mode genérico".
 2. **Roxo é o acento, não o preenchimento.** Usado em estados ativos, foco, "quem está falando", botões primários. O resto respira no escuro.
-3. **Densidade calma.** Ferramenta, não rede social. Pouca cor, pouco ruído, zero animação supérflua (coerente com o princípio de desempenho).
+3. **Densidade calma.** Ferramenta, não rede social. Pouca cor, pouco ruído. Movimento só para mostrar mudança de estado (hover, foco, aba), em 120–180 ms.
 4. **Nativo e leve.** UI no renderer **software** do Slint (D-02): sem driver gráfico, ~22 MB ociosa. A estética não pode custar desempenho: nada de sombras pesadas, blur ou gradientes animados. Vídeo fica numa área própria (janela-filha D3D11) e a UI não desenha por cima dela.
+5. **Uma tarefa lidera cada tela.** Na inicial, entrar com um convite; na sala, conversar. O resto fica em volta, mais quieto, e o raro (servidor, ponto de encontro, endereços) fica a um clique.
 
 ## 2. Paleta
 
@@ -30,7 +31,8 @@ A interface segue a **mesma linha espiritual do LerriNFC**: fundo escuro quase-p
 | `violet` | `#B36BFF` | `Accent` | Primário: fundo de botões, foco, bordas |
 | `violet-bright` | `#CB9BFF` | `Violet` | Hover do primário, **texto roxo sobre superfícies** (você no chat, "falando", "dono") |
 | `violet-deep` | `#8E7BFF` | `Blue` | Pressionado |
-| `violet-dim` | `#2E1A47` | `AccentDim` | Seleção de texto |
+| `violet-dim` | `#2E1A47` | `AccentDim` | Fundo do botão tonal e do avatar |
+| `violet-dim-hover` | `#3A2159` | — | Hover do botão tonal, seleção de texto |
 | `on-violet` | `#1A0A2E` | `OnAccent` | Texto sobre `violet`/`violet-bright`/`violet-deep` |
 | `violet-glow` | `#B36BFF40` | `Accent` a 25% | Anel de "falando agora" |
 
@@ -54,8 +56,11 @@ A interface segue a **mesma linha espiritual do LerriNFC**: fundo escuro quase-p
 
 - **UI:** **Segoe UI Variable** (fonte do sistema no Windows 11; Segoe UI no Windows 10). Nenhuma fonte embutida — embutir a Inter custaria megabytes do orçamento de 25 MB (RNF-02).
 - **Mono:** **Cascadia Mono** (vem com o Windows Terminal; fallback Consolas) para códigos de convite e IDs.
-- Escala: 12 (micro) · 14 (corpo) · 16 (ênfase) · 20 (título de painel) · 28 (título de tela).
-- Peso: 400 corpo, 600 títulos. Nada de light em fundo escuro (ilegível).
+- Escala (razão ~1,2): 12 (detalhe) · 13 (rótulo de campo, botão pequeno) · 14 (corpo) · 15 (título de painel) · 16–18 (título de tela/sala) · 24 (a tarefa principal da tela inicial).
+- Peso: 400 corpo, 600 títulos e botões, 700 só na inicial do avatar. Nada de light em fundo escuro (ilegível).
+- Mono só onde o conteúdo é código: convite, endereços, ids.
+
+**Cantos:** controles 8 px, painéis 12 px, pílulas e avatares inteiros (tokens `r-control` e `r-panel`).
 
 ## 4. Layout
 
@@ -76,19 +81,33 @@ A interface segue a **mesma linha espiritual do LerriNFC**: fundo escuro quase-p
 - **Área principal** alterna entre grade de vídeo/tela e chat.
 - **Barra de controle** fixa embaixo: microfone, compartilhar tela, câmera, sair. Ícones grandes, estados claros.
 
-Como ficou na Fase 6: o app abre **uma sala por vez**, então no lugar da barra lateral de salas há a lista "Minhas salas" na tela inicial. A sala tem cabeçalho (nome, convite, desconectar/sair) e indicador de rede; à esquerda, convite, vídeo assistido e chat; à direita, membros, detalhes da mídia e atividade; embaixo, a barra de controle (voz · tela · câmera), com botões de texto em vez de ícones (nenhuma fonte de ícones embutida, §3) e uma linha de estado. Tela "Sobre" com versão, rede/firewall e licenças.
+Como ficou: o app abre **uma sala por vez**, então no lugar da barra lateral de salas há a lista "Minhas salas" na tela inicial.
+
+- **Inicial:** barra do topo com a marca e "Sobre". Na coluna principal, "Entrar numa sala" lidera, com o mascote e o campo do convite; abaixo, "Criar uma sala" com abas "Direto deste PC (x1)" e "No meu servidor", e o ponto de encontro escondido em "Mais opções". Na lateral, "Seu perfil" (apelido com rótulo, histórico, id) e "Minhas salas", com estado vazio que explica para que serve. O conjunto centraliza na vertical e rola quando a janela fica baixa.
+- **Espera:** mascote, o que está acontecendo e uma barra indeterminada.
+- **Sala:** topo com o tipo ("Sala x1" / "Sala no servidor"), o id discreto e pílulas de "Cifrada de ponta a ponta" e do caminho de rede; à direita, Convidar, Desconectar (ou **Encerrar sala**, para o dono de uma x1, porque a sala vive no PC dele) e Sair da sala. À esquerda, avisos, convite (QR, link, copiar, gerar outro, endereços sob demanda), vídeo assistido e o chat, com avatar, mensagens seguidas da mesma pessoa agrupadas e um estado vazio que explica a cifragem. À direita, "Na sala" com avatares, presença e ações por membro, detalhes da mídia e atividade. Embaixo, a barra de controle com ícone e texto (voz | tela + monitor | câmera + qual câmera) e uma linha de estado em pílulas. Abaixo de 1000 px de largura, os botões da voz ficam só com ícone.
+- **Sobre:** coluna centrada com versão, rede/firewall e licenças em lista.
 
 ## 5. Componentes
 
-- **Botão primário:** fundo `violet`, texto `on-violet`, hover `violet-bright`, pressionado `violet-deep`.
-- **Botão fantasma:** borda `border`, texto `text`, hover `surface-hover`.
-- **Campos, caixa de seleção e lista de escolha:** componentes próprios (`Field`, `Check`, `Picker`), fundo `surface-raised`, borda `violet` no foco. Os do `std-widgets` usam o azul de destaque do Fluent, e o Slint 1.18 não deixa trocar as cores do `Palette`.
+- **Botão (`Btn`)**, com ícone, texto ou os dois, em três alturas (30, 36, 44):
+  - **primário**: fundo `violet`, texto `on-violet`, hover `violet-bright`, pressionado `violet-deep`. Uma ação principal por área (Entrar, Enviar, Copiar convite, Entrar na voz).
+  - **tonal**: fundo `violet-dim`, texto `violet-bright`. A segunda ação importante (Criar sala, Convidar, Compartilhar tela, Assistir).
+  - **fantasma**: borda `border`, texto `text`, hover `surface-hover`.
+  - **perigo**: borda e texto `danger`.
+  - **ligado**: o mesmo botão em `warning`, para alternâncias (microfone mudo, ensurdecido).
+- **Ícones:** Tabler Icons 3.47.0 (MIT), traço de 2 px, rasterizados em PNG de 48 px e pintados com `colorize`.
+- **Campos, caixa de seleção, abas e menu de dispositivo:** componentes próprios (`Field`, `Check`, `Segmented`, `DeviceMenu`), fundo `surface-raised`, borda `violet` no foco. Os do `std-widgets` usam o azul de destaque do Fluent, e o Slint 1.18 não deixa trocar as cores do `Palette`. Rótulo sempre acima do campo; o placeholder é só exemplo.
+- **Pílula (`Chip`):** estado curto com ponto ou ícone, mais texto.
+- **Faixa (`Banner`):** aviso dentro da tela, com ícone, texto e as ações (ex.: "Cancelar" e "Sair de vez").
 - **Campo de código de convite:** mono, fundo `surface-raised`, com botão "copiar" e QR ao lado (o QR fica preto no branco, como os leitores esperam).
 - **Tile de participante:** avatar/inicial, nick, anel `violet-glow` quando está falando.
 - **Indicador de rede:** ponto `success`/`warning`/`danger` + caminho + latência em ms (pra ferramenta que preza desempenho, mostrar o número é identidade). Bom: direto e < 120 ms; atenção: ≥ 120 ms ou pelo ponto de encontro; ruim: ≥ 300 ms (aí a voz passa dos 150 ms boca-a-ouvido).
-- **Toast:** canto inferior, `surface-raised`, borda `violet`.
+- **Confirmações:** em linha, no lugar onde a ação aconteceu (remover membro, sair da sala), nunca em modal.
 
 ## 6. Estados que merecem destaque
+
+- **Movimento:** transições de 120–180 ms em fundo e borda (hover, foco, aba). O único laço é a barra da tela de espera, que dura poucos segundos.
 
 - **Falando agora:** anel pulsante sutil em `violet-glow` no tile (única animação "viva" permitida). Ela força redesenho enquanto alguém fala, então: redesenha **só o tile**, no máximo a 30 fps, e para assim que o VAD indica silêncio. Com "reduzir animações" do Windows ativo, vira anel estático.
 - **Alguém entrou na sala:** aviso discreto no chat com o apelido e o início do `MemberId` (exigência de segurança, `SPEC-02` §7).
@@ -107,24 +126,28 @@ Contraste mínimo **WCAG AA** (4,5:1 para texto normal). Pares usados nas telas,
 | Texto | Fundo | Contraste |
 |-------|-------|-----------|
 | `text` | `ink` / `surface` / `surface-raised` / `surface-hover` | 17,3 / 16,3 / 15,5 / 14,1 |
-| `text` | `danger-dim` (faixa de erro) / `violet-dim` (seleção) | 13,8 / 13,4 |
+| `text` | `danger-dim` / `warning-dim` (faixas) / `violet-dim` | 13,8 / 11,9 / 13,4 |
+| `violet-bright` | `violet-dim` / `violet-dim-hover` (botão tonal) | 7,1 / 6,3 |
 | `text-dim` | `ink` / `surface` / `surface-raised` / `surface-hover` | 8,6 / 8,1 / 7,7 / 7,0 |
 | `text-placeholder` | `surface-raised` | 5,1 |
 | `on-violet` | `violet` / `violet-bright` / `violet-deep` | 5,7 / 8,6 / 5,7 |
 | `violet-bright` | `surface` / `surface-raised` / `surface-hover` | 8,7 / 8,2 / 7,5 |
 | `success` | `surface` / `surface-raised` | 10,7 / 10,1 |
 | `warning` | `surface` / `surface-raised` / `warning-dim` | 10,7 / 10,1 / 7,8 |
-| `danger` | `ink` / `surface` / `surface-raised` / `surface-hover` | 6,6 / 6,2 / 5,9 / 5,4 |
+| `danger` | `ink` / `surface` / `surface-raised` / `surface-hover` / `danger-dim` | 6,6 / 6,2 / 5,9 / 5,4 / 5,3 |
 | `text-mute` | `surface` | 3,5 — ⚠️ só desabilitado |
 
 - Estados nunca dependem só de cor: voz, tela, câmera e rede têm texto ("Voz: mudo", "Tela no ar · 2 assistindo", "Caminho direto · 3 ms").
-- Alvos de clique ≥ 26 px nos botões pequenos da lista de membros, 36 px no resto.
-- Botões, caixa de seleção e lista de escolha expõem papel, estado e ação padrão para leitores de tela (UI Automation).
-- Nenhuma animação, então "reduzir animações" já é respeitado.
+- Alvos de clique ≥ 30 px nos botões pequenos, 36–44 px no resto.
+- Teclado: botões e caixa de seleção entram no Tab e respondem a Enter/Espaço, com anel `violet-bright` só no foco por teclado (o clique não deixa anel).
+- Botões, campos, caixa de seleção, abas e menus expõem papel, estado, nome e ação padrão para leitores de tela (UI Automation). Botão só de ícone tem nome próprio ("Silenciar microfone"). Os campos aceitam escrita por acessibilidade (ditado, leitores de tela).
+- O movimento é curto e só em mudança de estado; nada pisca nem se repete na sala.
 
 ## 9. Critérios de aceite
 
 - [x] Telas principais usando só tokens desta paleta. *Exceções: o QR (preto no branco) e a barra de rolagem do `ScrollView` padrão.*
 - [x] Hex de roxo casados com o `Color.kt` do LerriNFC (P-01), com a tabela de contraste refeita.
 - [x] Todos os pares texto/fundo usados nas telas passam AA. *Conferido por teste.*
-- [x] Nenhuma animação contínua além do anel de "falando" (orçamento de desempenho). *Nem ele anima: é um anel estático.*
+- [x] Nenhuma animação contínua na sala (orçamento de desempenho). *O anel de "falando" é estático; o único laço é a barra da tela de espera.*
+- [x] Cada tela tem uma tarefa principal clara, estado vazio que ensina e confirmações em linha.
+- [x] Navegável por teclado, com foco visível.

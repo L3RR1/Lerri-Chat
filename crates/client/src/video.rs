@@ -44,7 +44,12 @@ pub fn probe() -> Caps {
     let (decode, decode_problem) = match (D3D::new(), ffmpeg::ffmpeg()) {
         (Ok(d3d), Ok(_)) => (ffmpeg::decode_caps(&d3d.device), None),
         (Err(e), _) => (Vec::new(), Some(format!("GPU indisponível: {e:#}"))),
-        (_, Err(e)) => (Vec::new(), Some(format!("{e} (as DLLs do FFmpeg vão ao lado do lerrichat.exe)"))),
+        // O detalhe técnico vai para o log; a sala mostra o que fazer.
+        (_, Err(e)) if e.starts_with("FFmpeg incompatível") => (Vec::new(), Some(format!("{e}; use a pasta ffmpeg que vem no zip do Lerri Chat"))),
+        (_, Err(e)) => {
+            tracing::info!("FFmpeg: {e}");
+            (Vec::new(), Some("falta a pasta ffmpeg ao lado do lerrichat.exe (ela vem no zip do Lerri Chat)".into()))
+        }
     };
     Caps { encode, decode, monitors, cameras, decode_problem }
 }

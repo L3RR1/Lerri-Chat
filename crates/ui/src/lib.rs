@@ -176,7 +176,11 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     let a = app.clone();
     let follow = slint::Timer::default();
     follow.start(slint::TimerMode::Repeated, Duration::from_millis(150), move || {
-        for change in video::follow(&a.ui()) {
+        let ui = a.ui();
+        // Medido aqui e não no .slint: lá a largura entra no próprio layout (loop).
+        let window = ui.window();
+        ui.set_narrow((window.size().width as f32 / window.scale_factor()) < 1000.0);
+        for change in video::follow(&ui) {
             match change {
                 video::Change::Resized { window, size } => a.send(Command::VideoResize { window, size }),
                 video::Change::Minimized(min) => a.send(Command::PauseVideo(min)),
@@ -186,11 +190,12 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     let a = app.clone();
     ui.on_copy_invite(move || {
         let ui = a.ui();
-        let status = match clipboard::set_text(&ui.get_invite_link()) {
-            Ok(()) => "copiado".into(),
-            Err(e) => format!("não deu para copiar: {e}"),
+        let (status, ok) = match clipboard::set_text(&ui.get_invite_link()) {
+            Ok(()) => ("Convite copiado".into(), true),
+            Err(e) => (format!("Não deu para copiar: {e}"), false),
         };
         ui.set_copy_status(status.into());
+        ui.set_copy_ok(ok);
     });
 
     if let Some(link) = initial_link {
@@ -457,7 +462,21 @@ impl View {
         }
         self.members.iter().find(|m| m.id == id).map_or_else(|| format!("{}…", &id.short()[..8]), MemberView::label)
     }
+
+    /// Inicial para o avatar (a do apelido, ou do id).
+    fn initial(&self, id: MemberId) -> String {
+        let label = self.members.iter().find(|m| m.id == id).map_or_else(|| id.short(), MemberView::label);
+        initial(&label)
+    }
 }
+
+fn initial(label: &str) -> String {
+    label.chars().find(|c| c.is_alphanumeric()).map_or_else(|| "?".into(), |c| c.to_uppercase().collect())
+}
+
+/// Mensagens seguidas da mesma pessoa, com menos de 5 min entre elas,
+/// aparecem juntas, sob um só nome.
+const CHAT_GROUP_SECS: u64 = 300;
 
 async fn run_room(
     ctx: RoomCtx,
@@ -470,10 +489,10 @@ async fn run_room(
     let RoomCtx { session, core, x1, invite_host, first_invite, reach } = ctx;
     {
         let room_id = session.room.to_string();
-        let mode = if session.mode == RoomMode::X1 { "x1, direta entre os PCs" } else { "servidor" };
+        let is_x1 = session.mode == RoomMode::X1;
+        let kind = if is_x1 { "Sala x1" } else { "Sala no servidor" };
         let is_owner = core.is_owner();
-        let role = if is_owner { "você é o dono" } else { "você é membro" };
-        let info = format!("Sala {mode} · {role} · mensagens cifradas de ponta a ponta (MLS)");
+        let info = if is_owner { "Você é o dono" } else { "Você é membro" };
         let has_invite_host = invite_host.is_some();
         let (reach_text, reach_note, reach_warning) = match &reach {
             Some(r) => (r.lines.join("\n"), r.note.clone().unwrap_or_default(), r.warning),
@@ -482,7 +501,9 @@ async fn run_room(
         let show_invite = first_invite.is_some();
         let _ = ui.upgrade_in_event_loop(move |ui| {
             ui.set_room_id(room_id[..12].into());
+            ui.set_room_kind(kind.into());
             ui.set_room_info(info.into());
+            ui.set_is_x1(is_x1);
             ui.set_is_owner(is_owner && has_invite_host);
             ui.set_reach_text(reach_text.into());
             ui.set_reach_note(reach_note.into());
@@ -623,11 +644,14 @@ fn push_view(ui: &Weak<AppWindow>, v: &View) {
     let chat: Vec<ChatRow> = v
         .chat
         .iter()
-        .map(|l| ChatRow {
+        .enumerate()
+        .map(|(i, l)| ChatRow {
             who: v.name(l.from).into(),
+            initial: v.initial(l.from).into(),
             text: l.text.clone().into(),
             time: clock::hh_mm(l.at, offset).into(),
             mine: Some(l.from) == v.me,
+            first: i.checked_sub(1).map(|p| &v.chat[p]).is_none_or(|p| p.from != l.from || l.at.saturating_sub(p.at) > CHAT_GROUP_SECS),
         })
         .collect();
     let members: Vec<MemberRow> = v
@@ -635,6 +659,7 @@ fn push_view(ui: &Weak<AppWindow>, v: &View) {
         .iter()
         .map(|m| MemberRow {
             label: if m.me { format!("{} (você)", m.label()).into() } else { m.label().into() },
+            initial: initial(&m.label()).into(),
             online: m.online,
             owner: m.owner,
             me: m.me,

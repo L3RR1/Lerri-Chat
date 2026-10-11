@@ -35,7 +35,14 @@ const PAIRS: &[(&str, &str)] = &[
     ("danger", "surface-raised"),
     ("danger", "surface-hover"),
     ("danger", "ink"),
+    ("danger", "danger-dim"),
     ("text", "violet-dim"),
+    ("text", "warning-dim"),
+    ("warning", "surface-hover"),
+    // Botão tonal, parado e com o mouse em cima; avatar dos outros.
+    ("violet-bright", "violet-dim"),
+    ("violet-bright", "violet-dim-hover"),
+    ("text-dim", "ink"),
 ];
 
 fn theme() -> HashMap<String, [u8; 3]> {

@@ -19,6 +19,10 @@ panic = "abort"
 # tempo todo numa chamada continua em opt-level 3. Economiza ~5 MB.
 [profile.release.package."*"]
 opt-level = "s"
+# "*" não pega os crates do workspace; o código que o Slint gera para a
+# interface fica no lerri-ui e também é frio (quem desenha é o renderer).
+[profile.release.package.lerri-ui]
+opt-level = "s"
 
 [profile.release.package.lerri-media]
 opt-level = 3

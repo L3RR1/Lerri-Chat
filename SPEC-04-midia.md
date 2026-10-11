@@ -41,7 +41,7 @@ Entrou depois da Fase 6:
 - **Push-to-talk:** tecla global lida pelo `GetAsyncKeyState` na própria thread de áudio a cada 10 ms (sem hook, sem admin; vale com o jogo em foco). Qualquer tecla ou botão do mouse, gravada na hora. Com a tecla apertada transmite mesmo sem o VAD detectar fala e segura 150 ms ao soltar.
 - **Escolha de microfone e saída** pelo nome, com "Padrão do Windows" como opção. Trocar na voz reabre só o áudio. Um escolhido que sumiu cai no padrão.
 
-Ainda falta: seguir sozinho a troca do dispositivo padrão do Windows sem sair e entrar de novo na voz.
+- **Segue o padrão do Windows:** o lado que está em "Padrão do Windows" acompanha a troca do padrão (fone ligado, saída trocada no ícone de som) sem sair da voz. A thread de voz olha o padrão a cada 1 s e reabre só os streams, mantendo o AEC e o encoder. Um dispositivo que some no meio da chamada é reaberto no padrão (até 3 s esperando o Windows eleger o novo); só sai da voz se não houver nenhum. A sala avisa para onde foi.
 
 ## 2. Compartilhamento de tela — o pilar do desempenho
 

@@ -5,6 +5,11 @@
 //! [`VoiceIo::capture`] a cada 10 ms. O callback de saída só mistura (o que
 //! já está decodificado ou chega pelo buffer de jitter) e devolve a mistura
 //! como referência do AEC.
+//!
+//! O lado que está no padrão do Windows acompanha a troca do padrão (fone
+//! novo, saída trocada no ícone de som) sem sair da voz: a mesma thread fecha
+//! e reabre só os streams. Um dispositivo que some no meio da chamada também
+//! é reaberto no padrão; só sai da voz se não houver nenhum.
 
 use std::sync::Arc;
 
@@ -38,8 +43,6 @@ pub fn list() -> (Vec<String>, Vec<String>) {
 
 /// Microfone e saída em uso. Para ao ser derrubado.
 pub struct Devices {
-    pub input: String,
-    pub output: String,
     #[cfg(windows)]
     inner: imp::Running,
 }
@@ -49,8 +52,7 @@ impl Devices {
     /// transmitir por `voice`. Um escolhido que sumiu cai no padrão.
     #[cfg(windows)]
     pub fn start(voice: Arc<Voice>, strong_ns: bool, choice: &DeviceChoice) -> Result<Self, DeviceError> {
-        let (inner, input, output) = imp::start(voice, strong_ns, choice.clone())?;
-        Ok(Self { input, output, inner })
+        Ok(Self { inner: imp::start(voice, strong_ns, choice.clone())? })
     }
 
     #[cfg(not(windows))]
@@ -59,7 +61,24 @@ impl Devices {
         Err(DeviceError::Unsupported)
     }
 
-    /// Erro do dispositivo (ex.: desconectado), se houve.
+    /// Nomes do microfone e da saída abertos agora.
+    pub fn names(&self) -> (String, String) {
+        #[cfg(windows)]
+        return self.inner.names();
+        #[cfg(not(windows))]
+        (String::new(), String::new())
+    }
+
+    /// Se trocou de dispositivo sozinho (padrão do Windows mudou ou o atual
+    /// sumiu) desde a última chamada.
+    pub fn take_switched(&self) -> bool {
+        #[cfg(windows)]
+        return self.inner.take_switched();
+        #[cfg(not(windows))]
+        false
+    }
+
+    /// Erro que tirou o áudio do ar (nenhum dispositivo para reabrir), se houve.
     pub fn error(&self) -> Option<String> {
         #[cfg(windows)]
         return self.inner.error();
@@ -91,10 +110,10 @@ mod imp {
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
     use std::sync::{Arc, Mutex};
     use std::thread::JoinHandle;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
+    use cpal::{DeviceId, FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
 
     use super::{DeviceChoice, DeviceError};
     use crate::dsp::TEN_MS;
@@ -105,6 +124,12 @@ mod imp {
     /// Referência do AEC esperando a thread de voz (10 ms cada).
     const REF_QUEUE: usize = 32;
     const CAPTURE_QUEUE: usize = 64;
+    /// De quanto em quanto tempo olha se o padrão do Windows mudou.
+    const CHECK_DEFAULT: Duration = Duration::from_secs(1);
+    /// Dispositivo sumiu: tentativas de reabrir enquanto o Windows escolhe o
+    /// novo padrão.
+    const REOPEN_TRIES: u32 = 6;
+    const REOPEN_WAIT: Duration = Duration::from_millis(500);
 
     #[derive(Default)]
     struct Control {
@@ -113,7 +138,12 @@ mod imp {
         strong_ns_changed: AtomicBool,
         /// Perda em centésimos de %; `u32::MAX`: nada novo.
         loss: AtomicU32,
+        /// Stream que caiu; a thread de voz tenta reabrir antes de desistir.
+        lost: Mutex<Option<String>>,
+        /// Desistiu: não há o que reabrir.
         error: Mutex<Option<String>>,
+        names: Mutex<(String, String)>,
+        switched: AtomicBool,
     }
 
     pub struct Running {
@@ -124,6 +154,14 @@ mod imp {
     impl Running {
         pub fn error(&self) -> Option<String> {
             self.ctl.error.lock().unwrap().clone()
+        }
+
+        pub fn names(&self) -> (String, String) {
+            self.ctl.names.lock().unwrap().clone()
+        }
+
+        pub fn take_switched(&self) -> bool {
+            self.ctl.switched.swap(false, Ordering::Relaxed)
         }
 
         pub fn set_strong_ns(&self, on: bool) {
@@ -151,7 +189,7 @@ mod imp {
         use cpal::ErrorKind as K;
         if matches!(e.kind(), K::DeviceNotAvailable | K::HostUnavailable | K::StreamInvalidated | K::PermissionDenied) {
             tracing::warn!("{what}: {e}");
-            *ctl.error.lock().unwrap() = Some(format!("{what}: {e}"));
+            *ctl.lost.lock().unwrap() = Some(format!("{what}: {e}"));
         } else {
             tracing::debug!("{what}: {e}");
         }
@@ -178,20 +216,33 @@ mod imp {
         )
     }
 
-    /// O dispositivo com esse nome, ou o padrão se não há escolha ou ele sumiu.
+    /// O dispositivo com esse nome, ou o padrão se não há escolha ou ele
+    /// sumiu. `true`: é o padrão, e acompanha quando o padrão mudar.
     fn pick(
         devices: Result<impl Iterator<Item = cpal::Device>, cpal::Error>,
         want: Option<&str>,
         default: Option<cpal::Device>,
-    ) -> Option<cpal::Device> {
+    ) -> Option<(cpal::Device, bool)> {
         let found = want.and_then(|w| devices.ok()?.find(|d| device_name(d) == w));
         if want.is_some() && found.is_none() {
             tracing::warn!("dispositivo {want:?} não encontrado; usando o padrão");
         }
-        found.or(default)
+        match found {
+            Some(d) => Some((d, false)),
+            None => default.map(|d| (d, true)),
+        }
     }
 
-    pub fn start(voice: Arc<Voice>, strong_ns: bool, choice: DeviceChoice) -> Result<(Running, String, String), DeviceError> {
+    /// Microfone e saída padrão do Windows agora.
+    fn defaults() -> (Option<DeviceId>, Option<DeviceId>) {
+        let host = cpal::default_host();
+        (
+            host.default_input_device().and_then(|d| d.id().ok()),
+            host.default_output_device().and_then(|d| d.id().ok()),
+        )
+    }
+
+    pub fn start(voice: Arc<Voice>, strong_ns: bool, choice: DeviceChoice) -> Result<Running, DeviceError> {
         let ctl = Arc::new(Control { loss: AtomicU32::new(u32::MAX), ..Control::default() });
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let c = ctl.clone();
@@ -201,7 +252,7 @@ mod imp {
             .map_err(audio)?;
         let running = Running { ctl, thread: Some(thread) };
         match ready_rx.recv() {
-            Ok(Ok((input, output))) => Ok((running, input, output)),
+            Ok(Ok(())) => Ok(running),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(DeviceError::Audio("a thread de áudio terminou sem abrir os dispositivos".into())),
         }
@@ -218,15 +269,27 @@ mod imp {
         far_end: Receiver<Vec<f32>>,
         input_name: String,
         output_name: String,
+        /// Dispositivo aberto em cada lado, se esse lado segue o padrão.
+        follow_in: Option<Option<DeviceId>>,
+        follow_out: Option<Option<DeviceId>>,
+    }
+
+    impl Streams {
+        /// O padrão do Windows mudou num lado que o segue.
+        fn default_moved(&self, (input, output): &(Option<DeviceId>, Option<DeviceId>)) -> bool {
+            self.follow_in.as_ref().is_some_and(|id| id != input) || self.follow_out.as_ref().is_some_and(|id| id != output)
+        }
     }
 
     fn open(voice: Arc<Voice>, choice: &DeviceChoice, ctl: &Arc<Control>) -> Result<Streams, DeviceError> {
         let host = cpal::default_host();
-        let in_dev = pick(host.input_devices(), choice.input.as_deref(), host.default_input_device())
+        let (in_dev, in_default) = pick(host.input_devices(), choice.input.as_deref(), host.default_input_device())
             .ok_or(DeviceError::Missing("microfone"))?;
-        let out_dev = pick(host.output_devices(), choice.output.as_deref(), host.default_output_device())
+        let (out_dev, out_default) = pick(host.output_devices(), choice.output.as_deref(), host.default_output_device())
             .ok_or(DeviceError::Missing("dispositivo de saída"))?;
         let (in_name, out_name) = (device_name(&in_dev), device_name(&out_dev));
+        let follow_in = in_default.then(|| in_dev.id().ok());
+        let follow_out = out_default.then(|| out_dev.id().ok());
 
         let in_cfg = in_dev.default_input_config().map_err(audio)?;
         let out_cfg = out_dev.default_output_config().map_err(audio)?;
@@ -269,6 +332,8 @@ mod imp {
             far_end: ref_rx,
             input_name: in_name,
             output_name: out_name,
+            follow_in,
+            follow_out,
         })
     }
 
@@ -332,7 +397,34 @@ mod imp {
         .map_err(audio)
     }
 
-    type Ready = SyncSender<Result<(String, String), DeviceError>>;
+    type Ready = SyncSender<Result<(), DeviceError>>;
+
+    /// Fecha os streams e abre de novo, nos dispositivos de agora. O WASAPI
+    /// não gosta do mesmo dispositivo aberto duas vezes, por isso fecha antes.
+    /// Com `retry`, insiste por alguns segundos (o Windows demora um pouco
+    /// para eleger o novo padrão quando o atual some).
+    fn reopen(old: Streams, voice: &Arc<Voice>, choice: &DeviceChoice, ctl: &Arc<Control>, retry: bool) -> Result<Streams, String> {
+        drop(old);
+        let tries = if retry { REOPEN_TRIES } else { 1 };
+        let mut last = String::new();
+        for i in 0..tries {
+            if i > 0 {
+                std::thread::sleep(REOPEN_WAIT);
+            }
+            if ctl.stop.load(Ordering::Relaxed) {
+                break;
+            }
+            match open(voice.clone(), choice, ctl) {
+                Ok(s) => {
+                    // Erro do stream velho, já fechado.
+                    ctl.lost.lock().unwrap().take();
+                    return Ok(s);
+                }
+                Err(e) => last = e.to_string(),
+            }
+        }
+        Err(last)
+    }
 
     fn run(voice: Arc<Voice>, strong_ns: bool, choice: DeviceChoice, ctl: Arc<Control>, ready: Ready) {
         // O tratamento de áudio não pode mudar de thread: nasce aqui.
@@ -343,18 +435,47 @@ mod imp {
                 return;
             }
         };
-        let streams = match open(voice, &choice, &ctl) {
+        let mut streams = match open(voice.clone(), &choice, &ctl) {
             Ok(s) => s,
             Err(e) => {
                 let _ = ready.send(Err(e));
                 return;
             }
         };
-        let _ = ready.send(Ok((streams.input_name.clone(), streams.output_name.clone())));
+        *ctl.names.lock().unwrap() = (streams.input_name.clone(), streams.output_name.clone());
+        let _ = ready.send(Ok(()));
         let mut rs = Resampler::new(streams.in_rate, RATE);
         let mut mono = Vec::new();
         let mut acc: Vec<f32> = Vec::new();
+        let mut next_check = Instant::now() + CHECK_DEFAULT;
         while !ctl.stop.load(Ordering::Relaxed) {
+            let lost = ctl.lost.lock().unwrap().take();
+            let moved = lost.is_none() && Instant::now() >= next_check && {
+                next_check = Instant::now() + CHECK_DEFAULT;
+                streams.default_moved(&defaults())
+            };
+            if lost.is_some() || moved {
+                if let Some(why) = &lost {
+                    tracing::info!("voz: {why}; reabrindo no padrão");
+                }
+                let before = (streams.input_name.clone(), streams.output_name.clone());
+                streams = match reopen(streams, &voice, &choice, &ctl, lost.is_some()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        *ctl.error.lock().unwrap() = Some(lost.unwrap_or(e));
+                        return;
+                    }
+                };
+                rs = Resampler::new(streams.in_rate, RATE);
+                acc.clear();
+                let now = (streams.input_name.clone(), streams.output_name.clone());
+                if now != before {
+                    tracing::info!("voz: agora \"{}\" → \"{}\"", now.0, now.1);
+                    *ctl.names.lock().unwrap() = now;
+                    ctl.switched.store(true, Ordering::Relaxed);
+                }
+                next_check = Instant::now() + CHECK_DEFAULT;
+            }
             if ctl.strong_ns_changed.swap(false, Ordering::Relaxed) {
                 io.set_strong_ns(ctl.strong_ns.load(Ordering::Relaxed));
             }
@@ -397,7 +518,8 @@ mod tests {
         let dev = Devices::start(voice.clone(), true, &DeviceChoice::default()).expect("abrir áudio");
         let (inputs, outputs) = list();
         println!("microfones: {inputs:?}\nsaídas: {outputs:?}");
-        println!("microfone: {} | saída: {}", dev.input, dev.output);
+        let (input, output) = dev.names();
+        println!("microfone: {input} | saída: {output}");
         let mut talked = false;
         for _ in 0..30 {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -411,11 +533,33 @@ mod tests {
         if let Some(other) = outputs.iter().find(|o| **o != outputs[0]) {
             let choice = DeviceChoice { input: None, output: Some(other.clone()) };
             let dev = Devices::start(voice.clone(), false, &choice).expect("abrir a saída escolhida");
-            assert_eq!(&dev.output, other);
-            println!("saída escolhida: {}", dev.output);
+            assert_eq!(&dev.names().1, other);
+            println!("saída escolhida: {other}");
         }
         // Um que sumiu cai no padrão em vez de falhar.
         let gone = DeviceChoice { input: Some("microfone que não existe".into()), output: None };
         assert!(Devices::start(voice, false, &gone).is_ok());
+    }
+
+    /// Fica 30 s na voz esperando trocar o dispositivo padrão do Windows
+    /// (`cargo test -p lerri-media -- --ignored --nocapture follows_default`
+    /// e trocar a saída no ícone de som).
+    #[test]
+    #[ignore = "precisa trocar o dispositivo padrão à mão"]
+    fn follows_default() {
+        let voice = Voice::new(Default::default(), |_| {});
+        let dev = Devices::start(voice, false, &DeviceChoice::default()).expect("abrir áudio");
+        println!("antes: {:?}", dev.names());
+        let mut switched = false;
+        for _ in 0..300 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert_eq!(dev.error(), None);
+            if dev.take_switched() {
+                println!("trocou: {:?}", dev.names());
+                switched = true;
+                break;
+            }
+        }
+        assert!(switched, "não acompanhou a troca do padrão");
     }
 }

@@ -1204,6 +1204,11 @@ pub struct VideoCaps {
     pub decode: Vec<Codec>,
 }
 
+fn device_label(d: &lerri_media::device::Devices) -> String {
+    let (input, output) = d.names();
+    format!("{input} → {output}")
+}
+
 fn video_info(caps: &VideoCaps) -> VideoInfo {
     #[cfg(windows)]
     return VideoInfo {
@@ -1337,7 +1342,7 @@ impl Media {
             emit(RoomEvent::VoiceHandle(VoiceHandle(v.voice().clone())));
         }
         self.voice_view.active = true;
-        self.voice_view.devices = v.devices().map(|d| format!("{} → {}", d.input, d.output));
+        self.voice_view.devices = v.devices().map(device_label);
         self.voice = Some(v);
         core.set_in_voice(true);
         emit(RoomEvent::Voice(self.voice_view.clone()));
@@ -1388,7 +1393,7 @@ impl Media {
         let Some(v) = &mut self.voice else { return };
         match v.restart_devices(self.voice_view.strong_ns, &choice) {
             Ok(()) => {
-                self.voice_view.devices = v.devices().map(|d| format!("{} → {}", d.input, d.output));
+                self.voice_view.devices = v.devices().map(device_label);
                 emit(RoomEvent::Voice(self.voice_view.clone()));
             }
             Err(e) => self.leave_voice(core, emit, Some(format!("{e:#}"))),
@@ -1645,6 +1650,13 @@ impl Media {
                 // Microfone ou fone desconectado: sai da voz em vez de ficar mudo sem aviso.
                 self.leave_voice(core, emit, Some(err));
             } else {
+                if let Some(d) = v.devices().filter(|d| d.take_switched()) {
+                    // O padrão do Windows mudou (ou o fone saiu): seguiu sozinho.
+                    let (input, output) = d.names();
+                    emit(RoomEvent::Notice(format!("Áudio agora em {input} e {output}")));
+                    self.voice_view.devices = Some(device_label(d));
+                    emit(RoomEvent::Voice(self.voice_view.clone()));
+                }
                 let members = core.voice_members().clone();
                 v.voice().retain(|m| members.contains(m));
                 let mut speaking: BTreeSet<MemberId> = v.voice().speaking().into_iter().collect();

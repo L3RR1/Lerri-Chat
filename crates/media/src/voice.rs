@@ -8,7 +8,7 @@
 //!   o microfone e [`Voice::render`] para encher a saída.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,9 @@ use crate::vad::Vad;
 
 /// Quanto tempo depois do último pacote alguém ainda conta como falando.
 const SPEAKING_HOLD: Duration = Duration::from_millis(300);
+/// Apertar para falar: depois de soltar a tecla, ainda manda este tanto
+/// (não corta a última sílaba).
+const PTT_HOLD: Duration = Duration::from_millis(150);
 pub const DEFAULT_BITRATE: i32 = 32_000;
 
 pub struct Uplink {
@@ -61,8 +64,9 @@ impl Uplink {
     }
 
     /// 10 ms do microfone. A cada 20 ms com fala, devolve o cabeçalho do
-    /// pacote Opus pronto em [`Uplink::packet`].
-    pub fn capture(&mut self, frame: &[f32], muted: bool) -> Option<Header> {
+    /// pacote Opus pronto em [`Uplink::packet`]. `open`: apertar para
+    /// falar (`Some(tecla apertada)`) no lugar da detecção de voz.
+    pub fn capture(&mut self, frame: &[f32], muted: bool, open: Option<bool>) -> Option<Header> {
         debug_assert_eq!(frame.len(), TEN_MS);
         let at = self.pcm.len();
         self.pcm.extend_from_slice(frame);
@@ -75,7 +79,7 @@ impl Uplink {
             return None;
         }
         let speech = self.vad.update(&self.pcm, self.voice_prob.take());
-        let send = speech && !muted;
+        let send = open.unwrap_or(speech) && !muted;
         let start = send && !self.talking;
         self.talking = send;
         let result = if send {
@@ -210,6 +214,8 @@ pub struct Voice {
     muted: AtomicBool,
     deafened: AtomicBool,
     talking: AtomicBool,
+    /// Tecla de apertar para falar (código virtual); 0: detecção de voz.
+    ptt_key: AtomicU32,
     send: SendFn,
     sent: AtomicU64,
     received: AtomicU64,
@@ -226,6 +232,7 @@ impl Voice {
             muted: AtomicBool::new(false),
             deafened: AtomicBool::new(false),
             talking: AtomicBool::new(false),
+            ptt_key: AtomicU32::new(0),
             send: Box::new(send),
             sent: AtomicU64::new(0),
             received: AtomicU64::new(0),
@@ -235,7 +242,17 @@ impl Voice {
 
     /// Ponta do microfone, para a thread de captura.
     pub fn io(self: &Arc<Self>, strong_ns: bool) -> Result<VoiceIo, OpusError> {
-        Ok(VoiceIo { uplink: Uplink::new(strong_ns)?, voice: self.clone(), datagram: Vec::new() })
+        Ok(VoiceIo { uplink: Uplink::new(strong_ns)?, voice: self.clone(), datagram: Vec::new(), ptt_until: None })
+    }
+
+    /// Apertar para falar com a tecla `vk` (código virtual do Windows);
+    /// `None` volta para a detecção de voz.
+    pub fn set_push_to_talk(&self, vk: Option<u32>) {
+        self.ptt_key.store(vk.unwrap_or(0), Ordering::Relaxed);
+    }
+
+    pub fn push_to_talk(&self) -> Option<u32> {
+        Some(self.ptt_key.load(Ordering::Relaxed)).filter(|k| *k != 0)
     }
 
     pub fn set_muted(&self, on: bool) {
@@ -312,6 +329,8 @@ pub struct VoiceIo {
     uplink: Uplink,
     voice: Arc<Voice>,
     datagram: Vec<u8>,
+    /// Apertar para falar: manda até este instante (tecla + [`PTT_HOLD`]).
+    ptt_until: Option<Instant>,
 }
 
 impl VoiceIo {
@@ -327,7 +346,14 @@ impl VoiceIo {
     pub fn capture(&mut self, frame: &[f32]) {
         let v = &self.voice;
         let silent = v.muted() || v.deafened();
-        let out = self.uplink.capture(frame, silent);
+        let open = v.push_to_talk().map(|key| {
+            let now = Instant::now();
+            if crate::hotkey::key_down(key) {
+                self.ptt_until = Some(now + PTT_HOLD);
+            }
+            self.ptt_until.is_some_and(|t| now < t)
+        });
+        let out = self.uplink.capture(frame, silent, open);
         v.talking.store(self.uplink.talking(), Ordering::Relaxed);
         let Some(header) = out else { return };
         let opus = self.uplink.packet();
@@ -419,6 +445,20 @@ mod tests {
             io.capture(&speech(i));
         }
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn push_to_talk_ignores_the_vad() {
+        let mut up = Uplink::new(false).unwrap();
+        // Tecla apertada: manda até silêncio (quem aperta quer falar).
+        let sent = (0..20).filter(|_| up.capture(&[0.0; TEN_MS], false, Some(true)).is_some()).count();
+        assert_eq!(sent, 10, "um pacote a cada 20 ms");
+        // Tecla solta: nem a fala passa.
+        let sent = (0..50).filter(|&i| up.capture(&speech(i), false, Some(false)).is_some()).count();
+        assert_eq!(sent, 0);
+        // Mudo vence a tecla.
+        let sent = (0..20).filter(|&i| up.capture(&speech(i), true, Some(true)).is_some()).count();
+        assert_eq!(sent, 0);
     }
 
     #[test]

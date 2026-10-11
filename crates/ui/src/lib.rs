@@ -57,6 +57,8 @@ struct App {
     members: Arc<Mutex<Vec<MemberView>>>,
     /// O que estamos assistindo (para os botões "Fechar" acharem o membro).
     watching: Arc<Mutex<Vec<(MemberId, Video)>>>,
+    /// Microfones e saídas mostrados no painel "Voz e áudio" (sem o "Padrão").
+    audio: Arc<Mutex<(Vec<String>, Vec<String>)>>,
 }
 
 /// Abre a janela e só volta quando ela for fechada. `initial_link`: convite
@@ -81,6 +83,7 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         saved: RefCell::new(Vec::new()),
         members: Arc::default(),
         watching: Arc::default(),
+        audio: Arc::default(),
     });
     app.refresh_saved();
 
@@ -150,6 +153,24 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         a.send(Command::StrongNoiseSuppression(on));
         a.save_settings();
     });
+    let a = app.clone();
+    ui.on_audio_settings_opened(move || a.refresh_audio_devices());
+    let a = app.clone();
+    ui.on_input_changed(move |_| a.send_audio_choice());
+    let a = app.clone();
+    ui.on_output_changed(move |_| a.send_audio_choice());
+    let a = app.clone();
+    ui.on_ptt_mode(move |on| {
+        if !on {
+            a.send(Command::PushToTalk(None));
+        } else if let Some(key) = Settings::load(&a.data_dir).push_to_talk_key {
+            a.send(Command::PushToTalk(Some(key)));
+        } else {
+            a.capture_ptt_key();
+        }
+    });
+    let a = app.clone();
+    ui.on_change_ptt_key(move || a.capture_ptt_key());
     let a = app.clone();
     ui.on_share_screen(move || {
         let monitor = video::monitor(a.ui().get_monitor_index().max(0) as usize);
@@ -245,6 +266,58 @@ impl App {
         });
     }
 
+    /// Lista microfones e saídas fora da thread da interface (o WASAPI leva
+    /// até ~1 s) e marca os escolhidos.
+    fn refresh_audio_devices(&self) {
+        let (weak, audio, data_dir) = (self.ui.clone(), self.audio.clone(), self.data_dir.clone());
+        std::thread::spawn(move || {
+            let (inputs, outputs) = lerri_media::device::list();
+            let settings = Settings::load(&data_dir);
+            let index = |list: &[String], want: &Option<String>| {
+                want.as_ref().and_then(|w| list.iter().position(|n| n == w)).map_or(0, |i| i as i32 + 1)
+            };
+            let (ii, oi) = (index(&inputs, &settings.input_device), index(&outputs, &settings.output_device));
+            let with_default = |list: &[String]| {
+                let mut v: Vec<SharedString> = vec!["Padrão do Windows".into()];
+                v.extend(list.iter().map(SharedString::from));
+                v
+            };
+            let (im, om) = (with_default(&inputs), with_default(&outputs));
+            *audio.lock().unwrap() = (inputs, outputs);
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                ui.set_audio_inputs(ModelRc::new(VecModel::from(im)));
+                ui.set_audio_outputs(ModelRc::new(VecModel::from(om)));
+                ui.set_input_index(ii);
+                ui.set_output_index(oi);
+            });
+        });
+    }
+
+    fn send_audio_choice(&self) {
+        let ui = self.ui();
+        let (inputs, outputs) = self.audio.lock().unwrap().clone();
+        let pick = |list: &[String], i: i32| (i > 0).then(|| list.get(i as usize - 1).cloned()).flatten();
+        self.send(Command::AudioDevices(lerri_media::device::DeviceChoice {
+            input: pick(&inputs, ui.get_input_index()),
+            output: pick(&outputs, ui.get_output_index()),
+        }));
+    }
+
+    /// Grava a próxima tecla apertada (até 10 s; Esc cancela) como a de
+    /// apertar para falar.
+    fn capture_ptt_key(&self) {
+        let Some(cmds) = self.room.borrow().as_ref().map(|r| r.cmds.clone()) else { return };
+        let weak = self.ui.clone();
+        self.ui().set_ptt_capturing(true);
+        std::thread::spawn(move || {
+            let key = lerri_media::hotkey::capture(Duration::from_secs(10));
+            if let Some(key) = key {
+                let _ = cmds.send(Command::PushToTalk(Some(key)));
+            }
+            let _ = weak.upgrade_in_event_loop(|ui| ui.set_ptt_capturing(false));
+        });
+    }
+
     fn unwatch(&self, video: Video) {
         let member = self.watching.lock().unwrap().iter().find(|(_, v)| *v == video).map(|(m, _)| *m);
         if let Some(member) = member {
@@ -262,7 +335,11 @@ impl App {
         let ui = self.ui();
         let nick = clean_nick(&ui.get_nickname());
         ui.set_nickname(nick.clone().into());
-        let settings = Settings { nickname: nick, keep_history: ui.get_keep_history(), strong_ns: ui.get_voice_strong_ns() };
+        // Lê antes: a sala grava microfone, saída e tecla no mesmo arquivo.
+        let mut settings = Settings::load(&self.data_dir);
+        settings.nickname = nick;
+        settings.keep_history = ui.get_keep_history();
+        settings.strong_ns = ui.get_voice_strong_ns();
         if let Err(e) = settings.save(&self.data_dir) {
             ui.set_error_text(format!("não deu para salvar as preferências: {e:#}").into());
         }
@@ -540,6 +617,7 @@ async fn run_room(
                     ui.set_voice_deafened(voice.deafened);
                     ui.set_voice_strong_ns(voice.strong_ns);
                     ui.set_voice_devices(voice.devices.unwrap_or_default().into());
+                    ui.set_ptt_key(voice.push_to_talk.unwrap_or_default().into());
                 });
                 return;
             }
@@ -679,6 +757,7 @@ fn push_view(ui: &Weak<AppWindow>, v: &View) {
         let grew = ui.get_chat().row_count() != chat.len();
         ui.set_chat(ModelRc::new(VecModel::from(chat)));
         ui.set_anyone_speaking(members.iter().any(|m| m.speaking));
+        ui.set_me_speaking(members.iter().any(|m| m.me && m.speaking));
         ui.set_members(ModelRc::new(VecModel::from(members)));
         ui.set_log(ModelRc::new(VecModel::from(log)));
         if grew {

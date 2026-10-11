@@ -473,6 +473,10 @@ component Check inherits Rectangle {
 component Segmented inherits Rectangle {
     in property <[string]> options;
     in-out property <int> index;
+    // Controlado: quem usa decide o índice a partir de `changed` (o estado
+    // vem de fora, ex.: gravação de tecla que pode ser cancelada).
+    in property <bool> controlled;
+    callback changed(int);
     height: 38px;
     border-radius: Theme.r-control;
     background: Theme.ink;
@@ -489,7 +493,7 @@ component Segmented inherits Rectangle {
             accessible-role: tab;
             accessible-label: option;
             accessible-item-selected: i == root.index;
-            accessible-action-default => { root.index = i; }
+            accessible-action-default => { root.pick(i); }
             Text {
                 text: option;
                 color: i == root.index ? Theme.text : Theme.text-dim;
@@ -499,9 +503,14 @@ component Segmented inherits Rectangle {
             }
             sta := TouchArea {
                 mouse-cursor: pointer;
-                clicked => { root.index = i; }
+                clicked => { root.pick(i); }
             }
         }
+    }
+
+    function pick(i: int) {
+        if (!root.controlled) { root.index = i; }
+        root.changed(i);
     }
 }
 
@@ -570,6 +579,100 @@ component DeviceMenu inherits Rectangle {
                     ita := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.current-index = i; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Lista suspensa no estilo dos campos (o ComboBox do std-widgets usa o azul
+// do Fluent). Abre para baixo.
+component Select inherits Rectangle {
+    in property <[string]> model;
+    in property <string> label;
+    in-out property <int> current-index;
+    callback selected(int);
+    property <length> item-height: 34px;
+
+    height: 36px;
+    min-width: 120px;
+    horizontal-stretch: 1;
+    border-radius: Theme.r-control;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.text-mute : Theme.border;
+    background: Theme.surface-raised;
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-value: root.model[root.current-index];
+    accessible-expandable: true;
+    accessible-action-default => { popup.show(); }
+    accessible-action-expand => { popup.show(); }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+    Text {
+        x: 12px;
+        width: parent.width - 40px;
+        height: parent.height;
+        text: root.model[root.current-index];
+        color: Theme.text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Icon {
+        x: parent.width - 28px;
+        y: (parent.height - self.height) / 2;
+        width: 16px;
+        height: 16px;
+        source: @image-url("icons/chevron-down.png");
+        colorize: Theme.text-dim;
+    }
+    popup := PopupWindow {
+        x: 0px;
+        y: root.height + 4px;
+        width: root.width;
+        Rectangle {
+            background: Theme.surface-raised;
+            border-radius: Theme.r-control + 2px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                spacing: 2px;
+                for item[i] in root.model: Rectangle {
+                    height: root.item-height;
+                    border-radius: 6px;
+                    background: ita.has-hover ? Theme.surface-hover : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        VerticalLayout {
+                            alignment: center;
+                            width: 16px;
+                            if i == root.current-index: Icon {
+                                source: @image-url("icons/check.png");
+                                colorize: Theme.violet-bright;
+                                width: 16px;
+                                height: 16px;
+                            }
+                        }
+                        Text {
+                            text: item;
+                            color: i == root.current-index ? Theme.violet-bright : Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    ita := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.current-index = i;
+                            root.selected(i);
+                        }
                     }
                 }
             }
@@ -892,6 +995,20 @@ component RoomView inherits VerticalLayout {
     in property <bool> voice-deafened;
     in-out property <bool> voice-strong-ns;
     in property <string> voice-devices;
+    // Voz e áudio: listas com "Padrão do Windows" no índice 0.
+    in property <[string]> audio-inputs: ["Padrão do Windows"];
+    in property <[string]> audio-outputs: ["Padrão do Windows"];
+    in-out property <int> input-index;
+    in-out property <int> output-index;
+    // Apertar para falar: nome da tecla; vazio = detecção de voz.
+    in property <string> ptt-key;
+    in property <bool> ptt-capturing;
+    in property <bool> me-speaking;
+    callback audio-settings-opened();
+    callback input-changed(int);
+    callback output-changed(int);
+    callback ptt-mode(bool);
+    callback change-ptt-key();
     callback new-invite();
     callback copy-invite();
     callback send-chat();
@@ -940,6 +1057,7 @@ component RoomView inherits VerticalLayout {
     property <bool> confirm-leave;
     property <int> confirm-remove: -1;
     property <bool> show-addresses;
+    property <bool> show-audio;
     property <bool> admitted: root.room-status == "";
     in property <bool> narrow;
     // "Efeitos de animação" desligados no Windows: ondas viram anel parado.
@@ -1047,6 +1165,81 @@ component RoomView inherits VerticalLayout {
             }
 
             if root.room-status != "": Banner { text: root.room-status; }
+
+            if root.show-audio: Panel {
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 14px;
+                    HorizontalLayout {
+                        Heading { text: "Voz e áudio"; vertical-alignment: center; }
+                        Rectangle { }
+                        Btn { compact: true; icon: @image-url("icons/x.png"); label: "Fechar voz e áudio"; clicked => { root.show-audio = false; } }
+                    }
+                    HorizontalLayout {
+                        spacing: 16px;
+                        VerticalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            FieldLabel { text: "Microfone"; }
+                            Select {
+                                label: "Microfone";
+                                model: root.audio-inputs;
+                                current-index <=> root.input-index;
+                                selected(i) => { root.input-changed(i); }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            FieldLabel { text: "Saída"; }
+                            Select {
+                                label: "Saída de áudio";
+                                model: root.audio-outputs;
+                                current-index <=> root.output-index;
+                                selected(i) => { root.output-changed(i); }
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        FieldLabel { text: "Quando transmitir"; }
+                        Segmented {
+                            options: ["Quando eu falar", "Só apertando uma tecla"];
+                            controlled: true;
+                            index: root.ptt-key != "" || root.ptt-capturing ? 1 : 0;
+                            changed(i) => { root.ptt-mode(i == 1); }
+                        }
+                    }
+                    if root.ptt-key != "" || root.ptt-capturing: HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: center;
+                            Icon { source: @image-url("icons/keyboard.png"); colorize: Theme.violet-bright; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.ptt-capturing ? "Aperte a tecla ou o botão do mouse que vai usar (Esc cancela)" : root.ptt-key;
+                                color: root.ptt-capturing ? Theme.violet-bright : Theme.text;
+                                font-weight: root.ptt-capturing ? 400 : 600;
+                                wrap: word-wrap;
+                            }
+                            if !root.ptt-capturing: Small { text: "Funciona com o jogo em foco. Segure para falar."; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Btn { compact: true; text: "Mudar tecla"; enabled: !root.ptt-capturing; clicked => { root.change-ptt-key(); } }
+                        }
+                    }
+                    Check {
+                        small: true;
+                        text: "Supressão forte de ruído (ventilador, teclado alto)";
+                        checked <=> root.voice-strong-ns;
+                        toggled => { root.strong-ns-changed(); }
+                    }
+                }
+            }
 
             if root.is-owner && root.show-invite: Panel {
                 VerticalLayout {
@@ -1199,7 +1392,7 @@ component RoomView inherits VerticalLayout {
                 }
             }
 
-            Panel {
+            chat-panel := Panel {
                 vertical-stretch: 1;
                 min-height: 140px;
                 VerticalLayout {
@@ -1248,7 +1441,7 @@ component RoomView inherits VerticalLayout {
                 }
                 // Sala vazia: diz o que acontece aqui e por que é seguro. Fica
                 // por cima da lista, acima da caixa de mensagem (69 px).
-                if root.chat.length == 0: VerticalLayout {
+                if root.chat.length == 0 && chat-panel.height > 250px: VerticalLayout {
                     x: 0px;
                     y: 0px;
                     width: parent.width;
@@ -1447,6 +1640,15 @@ component RoomView inherits VerticalLayout {
                         on: root.voice-deafened;
                         clicked => { root.toggle-deafen(); }
                     }
+                    Btn {
+                        icon: @image-url("icons/adjustments-horizontal.png");
+                        label: "Voz e áudio";
+                        tonal: root.show-audio;
+                        clicked => {
+                            root.show-audio = !root.show-audio;
+                            if (root.show-audio) { root.audio-settings-opened(); }
+                        }
+                    }
                     if root.voice-active: Btn {
                         text: root.narrow ? "" : "Sair da voz";
                         label: "Sair da voz";
@@ -1497,14 +1699,9 @@ component RoomView inherits VerticalLayout {
                     Chip {
                         dot: true;
                         tone: !root.voice-active ? Theme.text-mute : (root.voice-deafened || root.voice-muted) ? Theme.warning : Theme.success;
-                        text: !root.voice-active ? "Fora da voz" : root.voice-deafened ? "Ensurdecido" : root.voice-muted ? "Microfone mudo" : "Na voz";
+                        text: !root.voice-active ? "Fora da voz" : root.voice-deafened ? "Ensurdecido" : root.voice-muted ? "Microfone mudo"
+                            : root.ptt-key == "" ? "Na voz" : root.me-speaking ? "Transmitindo" : "Segure " + root.ptt-key + " para falar";
                     }
-                }
-                Check {
-                    small: true;
-                    text: "Supressão forte de ruído";
-                    checked <=> root.voice-strong-ns;
-                    toggled => { root.strong-ns-changed(); }
                 }
                 if root.screen-sharing: VerticalLayout {
                     alignment: center;
@@ -1678,6 +1875,18 @@ export component AppWindow inherits Window {
     in property <bool> voice-deafened;
     in-out property <bool> voice-strong-ns;
     in property <string> voice-devices;
+    in property <[string]> audio-inputs: ["Padrão do Windows"];
+    in property <[string]> audio-outputs: ["Padrão do Windows"];
+    in-out property <int> input-index;
+    in-out property <int> output-index;
+    in property <string> ptt-key;
+    in property <bool> ptt-capturing;
+    in property <bool> me-speaking;
+    callback audio-settings-opened();
+    callback input-changed(int);
+    callback output-changed(int);
+    callback ptt-mode(bool);
+    callback change-ptt-key();
     in property <bool> screen-sharing;
     in property <string> screen-info;
     in property <int> screen-watchers;
@@ -1817,6 +2026,18 @@ export component AppWindow inherits Window {
                 voice-deafened: root.voice-deafened;
                 voice-strong-ns <=> root.voice-strong-ns;
                 voice-devices: root.voice-devices;
+                audio-inputs: root.audio-inputs;
+                audio-outputs: root.audio-outputs;
+                input-index <=> root.input-index;
+                output-index <=> root.output-index;
+                ptt-key: root.ptt-key;
+                ptt-capturing: root.ptt-capturing;
+                me-speaking: root.me-speaking;
+                audio-settings-opened => { root.audio-settings-opened(); }
+                input-changed(i) => { root.input-changed(i); }
+                output-changed(i) => { root.output-changed(i); }
+                ptt-mode(on) => { root.ptt-mode(on); }
+                change-ptt-key => { root.change-ptt-key(); }
                 screen-sharing: root.screen-sharing;
                 screen-info: root.screen-info;
                 screen-watchers: root.screen-watchers;

@@ -20,6 +20,22 @@ pub enum DeviceError {
     Audio(String),
 }
 
+/// Microfone e saída escolhidos pelo nome. `None`: o padrão do Windows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceChoice {
+    pub input: Option<String>,
+    pub output: Option<String>,
+}
+
+/// Nomes dos microfones e das saídas desta máquina (leva até ~1 s: rode fora
+/// da thread da interface).
+pub fn list() -> (Vec<String>, Vec<String>) {
+    #[cfg(windows)]
+    return imp::list();
+    #[cfg(not(windows))]
+    (Vec::new(), Vec::new())
+}
+
 /// Microfone e saída em uso. Para ao ser derrubado.
 pub struct Devices {
     pub input: String,
@@ -29,16 +45,17 @@ pub struct Devices {
 }
 
 impl Devices {
-    /// Abre o microfone e a saída padrão e começa a transmitir por `voice`.
+    /// Abre o microfone e a saída escolhidos (ou os padrões) e começa a
+    /// transmitir por `voice`. Um escolhido que sumiu cai no padrão.
     #[cfg(windows)]
-    pub fn start(voice: Arc<Voice>, strong_ns: bool) -> Result<Self, DeviceError> {
-        let (inner, input, output) = imp::start(voice, strong_ns)?;
+    pub fn start(voice: Arc<Voice>, strong_ns: bool, choice: &DeviceChoice) -> Result<Self, DeviceError> {
+        let (inner, input, output) = imp::start(voice, strong_ns, choice.clone())?;
         Ok(Self { input, output, inner })
     }
 
     #[cfg(not(windows))]
-    pub fn start(voice: Arc<Voice>, strong_ns: bool) -> Result<Self, DeviceError> {
-        let _ = (voice, strong_ns);
+    pub fn start(voice: Arc<Voice>, strong_ns: bool, choice: &DeviceChoice) -> Result<Self, DeviceError> {
+        let _ = (voice, strong_ns, choice);
         Err(DeviceError::Unsupported)
     }
 
@@ -79,7 +96,7 @@ mod imp {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
 
-    use super::DeviceError;
+    use super::{DeviceChoice, DeviceError};
     use crate::dsp::TEN_MS;
     use crate::opus::RATE;
     use crate::resample::{Resampler, downmix, upmix};
@@ -144,13 +161,43 @@ mod imp {
         DeviceError::Audio(e.to_string())
     }
 
-    pub fn start(voice: Arc<Voice>, strong_ns: bool) -> Result<(Running, String, String), DeviceError> {
+    fn device_name(d: &cpal::Device) -> String {
+        d.description().map_or_else(|_| "padrão".to_string(), |d| d.name().to_string())
+    }
+
+    pub fn list() -> (Vec<String>, Vec<String>) {
+        let host = cpal::default_host();
+        let names = |devs: Result<Vec<cpal::Device>, cpal::Error>| {
+            let mut v: Vec<String> = devs.unwrap_or_default().iter().map(device_name).collect();
+            v.dedup();
+            v
+        };
+        (
+            names(host.input_devices().map(Iterator::collect)),
+            names(host.output_devices().map(Iterator::collect)),
+        )
+    }
+
+    /// O dispositivo com esse nome, ou o padrão se não há escolha ou ele sumiu.
+    fn pick(
+        devices: Result<impl Iterator<Item = cpal::Device>, cpal::Error>,
+        want: Option<&str>,
+        default: Option<cpal::Device>,
+    ) -> Option<cpal::Device> {
+        let found = want.and_then(|w| devices.ok()?.find(|d| device_name(d) == w));
+        if want.is_some() && found.is_none() {
+            tracing::warn!("dispositivo {want:?} não encontrado; usando o padrão");
+        }
+        found.or(default)
+    }
+
+    pub fn start(voice: Arc<Voice>, strong_ns: bool, choice: DeviceChoice) -> Result<(Running, String, String), DeviceError> {
         let ctl = Arc::new(Control { loss: AtomicU32::new(u32::MAX), ..Control::default() });
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let c = ctl.clone();
         let thread = std::thread::Builder::new()
             .name("voz".into())
-            .spawn(move || run(voice, strong_ns, c, ready_tx))
+            .spawn(move || run(voice, strong_ns, choice, c, ready_tx))
             .map_err(audio)?;
         let running = Running { ctl, thread: Some(thread) };
         match ready_rx.recv() {
@@ -173,12 +220,13 @@ mod imp {
         output_name: String,
     }
 
-    fn open(voice: Arc<Voice>, ctl: &Arc<Control>) -> Result<Streams, DeviceError> {
+    fn open(voice: Arc<Voice>, choice: &DeviceChoice, ctl: &Arc<Control>) -> Result<Streams, DeviceError> {
         let host = cpal::default_host();
-        let in_dev = host.default_input_device().ok_or(DeviceError::Missing("microfone"))?;
-        let out_dev = host.default_output_device().ok_or(DeviceError::Missing("dispositivo de saída"))?;
-        let name = |d: &cpal::Device| d.description().map_or_else(|_| "padrão".to_string(), |d| d.name().to_string());
-        let (in_name, out_name) = (name(&in_dev), name(&out_dev));
+        let in_dev = pick(host.input_devices(), choice.input.as_deref(), host.default_input_device())
+            .ok_or(DeviceError::Missing("microfone"))?;
+        let out_dev = pick(host.output_devices(), choice.output.as_deref(), host.default_output_device())
+            .ok_or(DeviceError::Missing("dispositivo de saída"))?;
+        let (in_name, out_name) = (device_name(&in_dev), device_name(&out_dev));
 
         let in_cfg = in_dev.default_input_config().map_err(audio)?;
         let out_cfg = out_dev.default_output_config().map_err(audio)?;
@@ -286,7 +334,7 @@ mod imp {
 
     type Ready = SyncSender<Result<(String, String), DeviceError>>;
 
-    fn run(voice: Arc<Voice>, strong_ns: bool, ctl: Arc<Control>, ready: Ready) {
+    fn run(voice: Arc<Voice>, strong_ns: bool, choice: DeviceChoice, ctl: Arc<Control>, ready: Ready) {
         // O tratamento de áudio não pode mudar de thread: nasce aqui.
         let mut io = match voice.io(strong_ns) {
             Ok(io) => io,
@@ -295,7 +343,7 @@ mod imp {
                 return;
             }
         };
-        let streams = match open(voice, &ctl) {
+        let streams = match open(voice, &choice, &ctl) {
             Ok(s) => s,
             Err(e) => {
                 let _ = ready.send(Err(e));
@@ -346,7 +394,9 @@ mod tests {
     #[ignore = "usa os dispositivos de áudio reais"]
     fn real_devices() {
         let voice = Voice::new(Default::default(), |_| {});
-        let dev = Devices::start(voice.clone(), true).expect("abrir áudio");
+        let dev = Devices::start(voice.clone(), true, &DeviceChoice::default()).expect("abrir áudio");
+        let (inputs, outputs) = list();
+        println!("microfones: {inputs:?}\nsaídas: {outputs:?}");
         println!("microfone: {} | saída: {}", dev.input, dev.output);
         let mut talked = false;
         for _ in 0..30 {
@@ -355,5 +405,17 @@ mod tests {
             assert_eq!(dev.error(), None);
         }
         println!("detectou fala: {talked}");
+        drop(dev);
+
+        // Escolhido pelo nome: abre esse, não o padrão.
+        if let Some(other) = outputs.iter().find(|o| **o != outputs[0]) {
+            let choice = DeviceChoice { input: None, output: Some(other.clone()) };
+            let dev = Devices::start(voice.clone(), false, &choice).expect("abrir a saída escolhida");
+            assert_eq!(&dev.output, other);
+            println!("saída escolhida: {}", dev.output);
+        }
+        // Um que sumiu cai no padrão em vez de falhar.
+        let gone = DeviceChoice { input: Some("microfone que não existe".into()), output: None };
+        assert!(Devices::start(voice, false, &gone).is_ok());
     }
 }

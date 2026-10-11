@@ -7,6 +7,7 @@
 
 pub mod device;
 pub mod dsp;
+pub mod hotkey;
 pub mod jitter;
 pub mod opus;
 pub mod resample;

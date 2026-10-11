@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use lerri_media::Voice;
 use lerri_media::screen::Keys;
-use lerri_media::device::Devices;
+use lerri_media::device::{DeviceChoice, Devices};
 use lerri_net::iroh::endpoint::Connection;
 use tokio::task::JoinHandle;
 
@@ -24,14 +24,14 @@ pub struct VoiceSession {
 impl VoiceSession {
     /// `keys`: chaves SFrame da sala. `devices: false` não abre microfone nem
     /// saída: quem chama alimenta o [`Voice`] (testes).
-    pub fn start(conn: Connection, keys: Keys, devices: bool, strong_ns: bool) -> anyhow::Result<Self> {
+    pub fn start(conn: Connection, keys: Keys, devices: bool, strong_ns: bool, choice: &DeviceChoice) -> anyhow::Result<Self> {
         let c = conn.clone();
         let voice = Voice::new(keys, move |d| {
             // Erro aqui é conexão caindo ou datagrama grande demais; a sessão
             // percebe o primeiro pelo stream de controle.
             let _ = c.send_datagram(d);
         });
-        let devices = if devices { Some(Devices::start(voice.clone(), strong_ns)?) } else { None };
+        let devices = if devices { Some(Devices::start(voice.clone(), strong_ns, choice)?) } else { None };
         let (c, v) = (conn.clone(), voice.clone());
         let reader = tokio::spawn(async move {
             while let Ok(d) = c.read_datagram().await {
@@ -48,6 +48,15 @@ impl VoiceSession {
 
     pub fn devices(&self) -> Option<&Devices> {
         self.devices.as_ref()
+    }
+
+    /// Troca o microfone ou a saída sem sair da voz. Fecha os atuais antes
+    /// (o WASAPI não gosta do mesmo dispositivo aberto duas vezes).
+    pub fn restart_devices(&mut self, strong_ns: bool, choice: &DeviceChoice) -> anyhow::Result<()> {
+        if self.devices.take().is_some() {
+            self.devices = Some(Devices::start(self.voice.clone(), strong_ns, choice)?);
+        }
+        Ok(())
     }
 
     /// Perda de pacotes da conexão desde a última chamada, para o encoder se

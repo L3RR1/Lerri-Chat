@@ -211,6 +211,8 @@ pub struct VoiceView {
     pub strong_ns: bool,
     /// "microfone → saída" em uso.
     pub devices: Option<String>,
+    /// Apertar para falar: o nome da tecla. `None`: detecção de voz.
+    pub push_to_talk: Option<String>,
 }
 
 #[derive(Clone)]
@@ -246,6 +248,12 @@ pub enum Command {
     /// Não ouve nem fala.
     Deafen(bool),
     StrongNoiseSuppression(bool),
+    /// Troca o microfone e a saída (`None`: os padrões do Windows). Na voz,
+    /// reabre o áudio sem sair dela.
+    AudioDevices(lerri_media::device::DeviceChoice),
+    /// Apertar para falar com a tecla dada (código virtual); `None` volta
+    /// para a detecção de voz.
+    PushToTalk(Option<u32>),
     /// Publica a tela ou a câmera. `gpu: false` é para testes (ver
     /// [`RoomEvent::OutgoingHandle`]).
     Publish { source: PublishSource, gpu: bool },
@@ -590,6 +598,32 @@ impl RoomCore {
 
     pub fn set_strong_ns(&mut self, on: bool, data_dir: &Path) {
         self.settings.strong_ns = on;
+        self.save_settings(data_dir);
+    }
+
+    pub fn audio_choice(&self) -> lerri_media::device::DeviceChoice {
+        lerri_media::device::DeviceChoice { input: self.settings.input_device.clone(), output: self.settings.output_device.clone() }
+    }
+
+    pub fn set_audio_choice(&mut self, choice: &lerri_media::device::DeviceChoice, data_dir: &Path) {
+        self.settings.input_device = choice.input.clone();
+        self.settings.output_device = choice.output.clone();
+        self.save_settings(data_dir);
+    }
+
+    pub fn push_to_talk(&self) -> Option<u32> {
+        self.settings.push_to_talk
+    }
+
+    pub fn set_push_to_talk(&mut self, key: Option<u32>, data_dir: &Path) {
+        self.settings.push_to_talk = key;
+        if key.is_some() {
+            self.settings.push_to_talk_key = key;
+        }
+        self.save_settings(data_dir);
+    }
+
+    fn save_settings(&mut self, data_dir: &Path) {
         if let Err(e) = self.settings.save(data_dir) {
             self.notice(format!("Não deu para salvar a preferência: {e:#}"));
         }
@@ -1041,6 +1075,8 @@ pub async fn run(
     let mut fast_tick = tokio::time::interval(SPEAKING_EVERY);
     fast_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut media = Media::new(&session, &core);
+    // A interface já mostra a supressão e a tecla de falar antes de entrar na voz.
+    emit(RoomEvent::Voice(media.voice_view.clone()));
     // O que a GPU desta máquina faz com vídeo (alguns ms; fora do runtime).
     let mut probe = Some(tokio::task::spawn_blocking(probe_video));
     loop {
@@ -1105,6 +1141,8 @@ pub async fn run(
                     core.set_strong_ns(on, &data_dir);
                     media.strong_ns(on, &emit);
                 }
+                Some(Command::AudioDevices(choice)) => media.audio_devices(&mut core, choice, &data_dir, &emit),
+                Some(Command::PushToTalk(key)) => media.push_to_talk(&mut core, key, &data_dir, &emit),
                 Some(Command::Publish { source, gpu }) => media.publish(&session, &mut core, source, gpu, &emit).await,
                 Some(Command::Unpublish(video)) => media.unpublish(&mut core, video, &emit),
                 Some(Command::Watch { member, video, target }) => media.watch(&mut core, member, video, target, &emit),
@@ -1207,7 +1245,11 @@ impl Media {
             keys,
             epoch: None,
             voice: None,
-            voice_view: VoiceView { strong_ns: core.strong_ns(), ..VoiceView::default() },
+            voice_view: VoiceView {
+                strong_ns: core.strong_ns(),
+                push_to_talk: core.push_to_talk().map(lerri_media::hotkey::key_name),
+                ..VoiceView::default()
+            },
             shares: HashMap::new(),
             views: HashMap::new(),
             viewers: HashMap::new(),
@@ -1255,12 +1297,13 @@ impl Media {
         if !core.in_group() {
             return emit(RoomEvent::Notice("A voz abre depois que você for admitido no grupo cifrado.".into()));
         }
-        let v = match VoiceSession::start(session.connection(), self.keys.clone(), devices, self.voice_view.strong_ns) {
+        let v = match VoiceSession::start(session.connection(), self.keys.clone(), devices, self.voice_view.strong_ns, &core.audio_choice()) {
             Ok(v) => v,
             Err(e) => return emit(RoomEvent::Notice(format!("Não deu para abrir o áudio: {e:#}"))),
         };
         v.voice().set_muted(self.voice_view.muted);
         v.voice().set_deafened(self.voice_view.deafened);
+        v.voice().set_push_to_talk(core.push_to_talk());
         if !devices {
             emit(RoomEvent::VoiceHandle(VoiceHandle(v.voice().clone())));
         }
@@ -1308,6 +1351,27 @@ impl Media {
         if let Some(d) = self.voice.as_ref().and_then(VoiceSession::devices) {
             d.set_strong_ns(on);
         }
+        emit(RoomEvent::Voice(self.voice_view.clone()));
+    }
+
+    fn audio_devices(&mut self, core: &mut RoomCore, choice: lerri_media::device::DeviceChoice, data_dir: &Path, emit: &impl Fn(RoomEvent)) {
+        core.set_audio_choice(&choice, data_dir);
+        let Some(v) = &mut self.voice else { return };
+        match v.restart_devices(self.voice_view.strong_ns, &choice) {
+            Ok(()) => {
+                self.voice_view.devices = v.devices().map(|d| format!("{} → {}", d.input, d.output));
+                emit(RoomEvent::Voice(self.voice_view.clone()));
+            }
+            Err(e) => self.leave_voice(core, emit, Some(format!("{e:#}"))),
+        }
+    }
+
+    fn push_to_talk(&mut self, core: &mut RoomCore, key: Option<u32>, data_dir: &Path, emit: &impl Fn(RoomEvent)) {
+        core.set_push_to_talk(key, data_dir);
+        if let Some(v) = &self.voice {
+            v.voice().set_push_to_talk(key);
+        }
+        self.voice_view.push_to_talk = key.map(lerri_media::hotkey::key_name);
         emit(RoomEvent::Voice(self.voice_view.clone()));
     }
 

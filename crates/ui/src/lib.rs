@@ -749,6 +749,7 @@ fn push_view(ui: &Weak<AppWindow>, v: &View) {
             watching: v.watching.contains(&(m.id, Video::Screen)),
             camera: m.camera,
             watching_camera: v.watching.contains(&(m.id, Video::Camera)),
+            latency: m.latency_ms.map_or(-1, |ms| ms.min(9999) as i32),
         })
         .collect();
     // Mais recente primeiro: o quadro de atividade é pequeno.

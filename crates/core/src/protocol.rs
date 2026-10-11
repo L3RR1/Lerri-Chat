@@ -9,7 +9,7 @@ use crate::media::Video;
 use crate::{MemberId, RoomId};
 
 /// ALPN do protocolo. Muda quando o formato do fio quebra compatibilidade.
-pub const ALPN: &[u8] = b"lerrichat/3";
+pub const ALPN: &[u8] = b"lerrichat/4";
 
 /// Tamanho máximo de um frame, para que um peer não force alocações gigantes.
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
@@ -153,6 +153,9 @@ pub enum Frame {
     MemberRemoved { member: MemberId, left: bool },
     /// Você foi removido da sala.
     Removed,
+    /// Ida e volta de cada membro online até o relay, em ms (a cada poucos
+    /// segundos). Com a sua, dá para estimar a latência até cada um.
+    Latency { rtts: Vec<(MemberId, u32)> },
 }
 
 #[derive(Debug, thiserror::Error)]

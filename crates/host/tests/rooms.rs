@@ -164,3 +164,36 @@ async fn wrong_host_key_is_rejected() {
     assert!(!matches!(attempt, Ok(Ok(_))), "conectou num host com chave diferente da fixada");
     x1.shutdown().await;
 }
+
+/// Com duas pessoas na sala, o relay conta a cada 3 s a ida e volta de cada
+/// uma até ele.
+#[tokio::test(flavor = "multi_thread")]
+async fn relay_reports_latency_of_each_member() {
+    let dir = temp_dir();
+    let relay = start_relay(&dir).await;
+    let host = relay.host_addr().clone();
+    let admin = relay.admin_link().admin.unwrap();
+    let (owner_id, guest_id) = (id(), id());
+    let owner = Session::connect(&owner_id, &host, Auth::CreateRoom { admin, mode: RoomMode::Server }).await.unwrap();
+    let invite = owner.issue_invite(&host, 3600).await.unwrap();
+    let guest = Session::connect(&guest_id, &host, Auth::Join { room: owner.room, token: invite.token }).await.unwrap();
+
+    let mut rtts = Vec::new();
+    for _ in 0..80 {
+        rtts = guest.latency();
+        if rtts.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut who: Vec<_> = rtts.iter().map(|(m, _)| *m).collect();
+    who.sort();
+    let mut want = vec![owner_id.member_id(), guest_id.member_id()];
+    want.sort();
+    assert_eq!(who, want, "latência dos dois");
+    assert!(rtts.iter().all(|(_, ms)| *ms < 1000), "{rtts:?}");
+    guest.close().await;
+    owner.close().await;
+    relay.shutdown().await;
+    let _ = std::fs::remove_dir_all(dir);
+}

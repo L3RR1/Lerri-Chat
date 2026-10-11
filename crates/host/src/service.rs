@@ -45,6 +45,8 @@ const MAX_IN_FLIGHT_CAMERA: usize = 4;
 const KEYFRAME_EVERY: Duration = Duration::from_millis(500);
 /// Quadro que não chega neste tempo é abandonado.
 const VIDEO_DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// De quanto em quanto tempo o relay conta a latência de cada um à sala.
+const LATENCY_EVERY: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Room {
@@ -221,6 +223,19 @@ impl RoomService {
 
     /// Aceita conexões até o endpoint fechar.
     pub async fn serve(self: Arc<Self>, endpoint: Endpoint) {
+        let svc = self.clone();
+        let latency = tokio::spawn(async move {
+            let mut every = tokio::time::interval(LATENCY_EVERY);
+            loop {
+                every.tick().await;
+                svc.broadcast_latency();
+            }
+        });
+        self.accept_loop(endpoint).await;
+        latency.abort();
+    }
+
+    async fn accept_loop(self: &Arc<Self>, endpoint: Endpoint) {
         while let Some(incoming) = endpoint.accept().await {
             let svc = self.clone();
             tokio::spawn(async move {
@@ -363,6 +378,26 @@ impl RoomService {
             info!(room = %room, member = %me.short(), "membro offline");
         }
         result
+    }
+
+    /// Conta a cada sala com duas pessoas ou mais a ida e volta de cada uma
+    /// até aqui.
+    fn broadcast_latency(&self) {
+        let st = self.state.lock().unwrap();
+        for peers in st.online.values().filter(|p| p.len() > 1) {
+            let rtts: Vec<(MemberId, u32)> = peers
+                .iter()
+                .filter_map(|(m, p)| {
+                    let paths = p.conn.paths();
+                    let path = paths.iter().find(|path| path.is_selected())?;
+                    Some((*m, u32::try_from(path.rtt().as_millis()).unwrap_or(u32::MAX)))
+                })
+                .collect();
+            let frame = Frame::Latency { rtts };
+            for p in peers.values() {
+                let _ = p.tx.send(frame.clone());
+            }
+        }
     }
 
     fn admit(&self, auth: &Auth, member: MemberId) -> Result<(RoomId, Admitted), Refusal> {

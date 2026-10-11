@@ -56,6 +56,7 @@ pub struct Session {
     send: tokio::sync::Mutex<SendStream>,
     pending: Arc<Mutex<Option<oneshot::Sender<Frame>>>>,
     events: mpsc::UnboundedReceiver<Event>,
+    latency: Arc<Mutex<Vec<(MemberId, u32)>>>,
     pub me: MemberId,
     pub room: RoomId,
     pub mode: RoomMode,
@@ -112,7 +113,8 @@ impl Session {
 
         let (tx, events) = mpsc::unbounded_channel();
         let pending: Arc<Mutex<Option<oneshot::Sender<Frame>>>> = Arc::default();
-        let p = pending.clone();
+        let latency: Arc<Mutex<Vec<(MemberId, u32)>>> = Arc::default();
+        let (p, l) = (pending.clone(), latency.clone());
         let c = conn.clone();
         tokio::spawn(async move {
             let reason = loop {
@@ -141,6 +143,8 @@ impl Session {
                             }
                         }
                     }
+                    // Chega a cada 3 s: vira estado consultável, não evento.
+                    Ok(Some(Frame::Latency { rtts })) => *l.lock().unwrap() = rtts,
                     Ok(Some(other)) => {
                         let _ = tx.send(Event::Relay(other));
                     }
@@ -157,6 +161,7 @@ impl Session {
             send: tokio::sync::Mutex::new(send),
             pending,
             events,
+            latency,
             me: identity.member_id(),
             room,
             mode,
@@ -167,6 +172,12 @@ impl Session {
             voice,
             publishing,
         })
+    }
+
+    /// Última ida e volta de cada membro até o host, em ms (o relay manda a
+    /// cada 3 s quando há duas pessoas ou mais).
+    pub fn latency(&self) -> Vec<(MemberId, u32)> {
+        self.latency.lock().unwrap().clone()
     }
 
     /// Manda um frame ao relay.

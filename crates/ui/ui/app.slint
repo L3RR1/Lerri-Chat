@@ -62,6 +62,8 @@ export struct MemberRow {
     watching: bool,
     camera: bool,
     watching-camera: bool,
+    // Ida e volta estimada até a pessoa, em ms; -1: ainda sem medida.
+    latency: int,
 }
 
 // Ícones: Tabler Icons 3.47.0 (MIT, icons/LICENSE), traço de 2 px, rasterizados
@@ -1507,6 +1509,15 @@ component RoomView inherits VerticalLayout {
                                     font-size: 12px;
                                     wrap: word-wrap;
                                 }
+                            }
+                            // Latência até a pessoa (a sua aparece no topo, no caminho de rede).
+                            if !m.me && m.latency >= 0: Text {
+                                text: m.latency + " ms";
+                                color: m.latency < 120 ? Theme.text-dim : m.latency < 300 ? Theme.warning : Theme.danger;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                accessible-role: text;
+                                accessible-label: "Latência até " + m.label + ": " + m.latency + " milissegundos";
                             }
                             if m.in-voice && !m.speaking: VerticalLayout {
                                 alignment: center;

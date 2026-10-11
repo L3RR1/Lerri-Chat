@@ -92,6 +92,8 @@ pub struct MemberView {
     pub sharing: bool,
     /// Com a câmera ligada.
     pub camera: bool,
+    /// Ida e volta estimada até esta pessoa, em ms (para você: até o host).
+    pub latency_ms: Option<u32>,
 }
 
 impl MemberView {
@@ -301,6 +303,8 @@ pub struct RoomCore {
     /// Quem está no canal de voz (nós inclusive, quando estamos).
     voice_members: BTreeSet<MemberId>,
     speaking: BTreeSet<MemberId>,
+    /// Ida e volta de cada membro até o host (do relay, a cada 3 s).
+    latency: HashMap<MemberId, u32>,
     /// Quem publica tela ou câmera.
     publishing: BTreeSet<(MemberId, Video)>,
     /// Codecs que cada membro decodifica (anunciados pelo MLS).
@@ -358,6 +362,7 @@ impl RoomCore {
             online: BTreeSet::new(),
             voice_members: BTreeSet::new(),
             speaking: BTreeSet::new(),
+            latency: HashMap::new(),
             publishing: BTreeSet::new(),
             caps: HashMap::new(),
             my_caps: Vec::new(),
@@ -478,6 +483,7 @@ impl RoomCore {
                 waiting: !in_group.contains(&id),
                 in_voice: self.voice_members.contains(&id),
                 speaking: self.speaking.contains(&id),
+                latency_ms: self.latency_to(id),
                 sharing: self.publishing.contains(&(id, Video::Screen)),
                 camera: self.publishing.contains(&(id, Video::Camera)),
             })
@@ -585,6 +591,24 @@ impl RoomCore {
     }
 
     /// Quem está falando agora (nós inclusive).
+    /// A mídia sempre passa pelo host: até alguém é a sua ida e volta até o
+    /// host mais a dele (no x1 o dono é o host, então a dele é ~0).
+    fn latency_to(&self, id: MemberId) -> Option<u32> {
+        let mine = *self.latency.get(&self.me)?;
+        if id == self.me {
+            return Some(mine);
+        }
+        Some(mine.saturating_add(*self.latency.get(&id)?))
+    }
+
+    pub fn set_latency(&mut self, rtts: Vec<(MemberId, u32)>) {
+        let latency: HashMap<MemberId, u32> = rtts.into_iter().collect();
+        if latency != self.latency {
+            self.latency = latency;
+            self.refresh();
+        }
+    }
+
     pub fn set_speaking(&mut self, speaking: BTreeSet<MemberId>) {
         if speaking != self.speaking {
             self.speaking = speaking;
@@ -1152,6 +1176,7 @@ pub async fn run(
             },
             _ = tick.tick() => {
                 route(session.route());
+                core.set_latency(session.latency());
                 if let Some(v) = &mut media.voice {
                     v.measure_loss();
                 }

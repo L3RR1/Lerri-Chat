@@ -18,17 +18,9 @@ use lerri_crypto::sframe::{Keyring, SframeError};
 /// Chaves SFrame da sala, as mesmas da voz: um contador só por remetente.
 pub type Keys = Arc<Mutex<Keyring>>;
 
-/// Monta o conteúdo do stream de um quadro da camada `layer`.
-pub fn seal_frame(
-    keys: &Keys,
-    video: Video,
-    layer: u8,
-    seq: u16,
-    keyframe: bool,
-    codec: Codec,
-    data: &[u8],
-) -> Result<Vec<u8>, SframeError> {
-    let header = Header::video(video, layer, seq, keyframe).encode();
+/// Monta o conteúdo do stream de um quadro de vídeo.
+pub fn seal_frame(keys: &Keys, header: Header, codec: Codec, data: &[u8]) -> Result<Vec<u8>, SframeError> {
+    let header = header.encode();
     let mut plain = Vec::with_capacity(data.len() + 1);
     plain.push(codec.to_byte());
     plain.extend_from_slice(data);
@@ -46,6 +38,8 @@ pub struct Frame {
     pub layer: u8,
     pub seq: u16,
     pub keyframe: bool,
+    /// Camada temporal de cima do SVC: `seq` é a do quadro de que depende.
+    pub droppable: bool,
     pub codec: Codec,
     pub data: Vec<u8>,
 }
@@ -57,7 +51,16 @@ pub fn open_frame(keys: &Keys, stream: &[u8]) -> Result<Frame, SframeError> {
     let (from, plain) = keys.lock().unwrap().open(&stream[..HEADER_LEN], body)?;
     let (&codec, data) = plain.split_first().ok_or(SframeError::Malformed)?;
     let codec = Codec::from_byte(codec).ok_or(SframeError::Malformed)?;
-    Ok(Frame { from, video, layer: header.layer, seq: header.seq, keyframe: header.keyframe, codec, data: data.to_vec() })
+    Ok(Frame {
+        from,
+        video,
+        layer: header.layer,
+        seq: header.seq,
+        keyframe: header.keyframe,
+        droppable: header.droppable && !header.keyframe,
+        codec,
+        data: data.to_vec(),
+    })
 }
 
 /// Quanto esperar um quadro que ficou para trás antes de desistir e pedir um
@@ -76,6 +79,9 @@ pub struct Reorder {
     /// Próximo esperado, com o número de sequência estendido para 64 bits.
     next: Option<u64>,
     held: BTreeMap<u64, Frame>,
+    /// Quadros descartáveis (SVC) que chegaram antes do quadro de que
+    /// dependem, pela sequência dele.
+    extras: BTreeMap<u64, Vec<Frame>>,
     waiting_since: Option<Instant>,
 }
 
@@ -110,18 +116,32 @@ impl Reorder {
             *self = Self { layer: frame.layer, ..Self::default() };
         }
         let e = self.extend(frame.seq);
+        if frame.droppable {
+            // Vai logo depois do quadro de que depende. Se o seguinte já
+            // passou, chegou tarde: nada depende dele, então só some (o relay
+            // também corta esses de quem atrasa, sem buraco na sequência).
+            match self.next {
+                Some(n) if e + 1 == n => out.push(frame),
+                Some(n) if e >= n && self.extras.values().map(Vec::len).sum::<usize>() < MAX_HELD => {
+                    self.extras.entry(e).or_default().push(frame);
+                }
+                _ => {}
+            }
+            return out;
+        }
         match self.next {
             // Keyframe zera a dependência: o que esperava antes dele não serve mais.
             _ if frame.keyframe && self.next.is_none_or(|n| e >= n) => {
                 self.held.retain(|k, _| *k > e);
+                self.extras.retain(|k, _| *k >= e);
                 self.next = Some(e + 1);
-                out.push(frame);
+                self.deliver(e, frame, &mut out);
             }
             None => return out, // ainda esperando o primeiro keyframe
             Some(n) if e < n => return out, // atrasado demais ou repetido
             Some(n) if e == n => {
                 self.next = Some(e + 1);
-                out.push(frame);
+                self.deliver(e, frame, &mut out);
             }
             Some(_) => {
                 if self.held.len() < MAX_HELD {
@@ -136,7 +156,7 @@ impl Reorder {
             && let Some(f) = self.held.remove(&n)
         {
             self.next = Some(n + 1);
-            out.push(f);
+            self.deliver(n, f, &mut out);
         }
         if self.held.is_empty() {
             self.waiting_since = None;
@@ -146,12 +166,22 @@ impl Reorder {
         out
     }
 
+    /// Entrega o quadro `e` e os descartáveis que esperavam por ele.
+    fn deliver(&mut self, e: u64, frame: Frame, out: &mut Vec<Frame>) {
+        out.push(frame);
+        if let Some(extras) = self.extras.remove(&e) {
+            out.extend(extras);
+        }
+        self.extras.retain(|k, _| *k > e);
+    }
+
     /// Chame de tempos em tempos: um buraco que não fechou vira pedido de
     /// keyframe, e a ordem recomeça no próximo.
     pub fn poll(&mut self, now: Instant) -> Gap {
         match self.waiting_since {
             Some(t) if now.duration_since(t) >= GAP_TIMEOUT => {
                 self.held.clear();
+                self.extras.clear();
                 self.next = None;
                 self.waiting_since = None;
                 Gap::NeedKeyframe
@@ -242,7 +272,48 @@ mod tests {
     use zeroize::Zeroizing;
 
     fn frame(seq: u16, keyframe: bool) -> Frame {
-        Frame { from: MemberId([1; 32]), video: Video::Screen, layer: 0, seq, keyframe, codec: Codec::Hevc, data: vec![seq as u8] }
+        Frame {
+            from: MemberId([1; 32]),
+            video: Video::Screen,
+            layer: 0,
+            seq,
+            keyframe,
+            droppable: false,
+            codec: Codec::Hevc,
+            data: vec![seq as u8],
+        }
+    }
+
+    /// Descartável pendurado no quadro `seq`.
+    fn extra(seq: u16) -> Frame {
+        Frame { droppable: true, data: vec![seq as u8, 0xdd], ..frame(seq, false) }
+    }
+
+    /// (seq, descartável) na ordem entregue.
+    fn order(v: &[Frame]) -> Vec<(u16, bool)> {
+        v.iter().map(|f| (f.seq, f.droppable)).collect()
+    }
+
+    #[test]
+    fn droppable_frames_follow_their_base_and_never_open_a_gap() {
+        let t = Instant::now();
+        let mut r = Reorder::default();
+        assert!(r.push(extra(9), t).is_empty(), "sem keyframe ainda");
+        assert_eq!(order(&r.push(frame(10, true), t)), [(10, false)]);
+        assert_eq!(order(&r.push(extra(10), t)), [(10, true)]);
+        // Descartável antes da sua base: espera por ela.
+        assert!(r.push(extra(11), t).is_empty());
+        assert_eq!(order(&r.push(frame(11, false), t)), [(11, false), (11, true)]);
+        // O relay cortou os descartáveis: a base segue sem buraco nem keyframe.
+        assert_eq!(order(&r.push(frame(12, false), t)), [(12, false)]);
+        assert_eq!(order(&r.push(frame(13, false), t)), [(13, false)]);
+        assert_eq!(r.poll(t + Duration::from_secs(1)), Gap::None);
+        // Descartável atrasado (a base seguinte já passou): some.
+        assert!(r.push(extra(12), t).is_empty());
+        // Base fora de ordem com o descartável dela no meio.
+        assert!(r.push(frame(15, false), t).is_empty());
+        assert!(r.push(extra(14), t).is_empty());
+        assert_eq!(order(&r.push(frame(14, false), t)), [(14, false), (14, true), (15, false)]);
     }
 
     fn low(seq: u16, keyframe: bool) -> Frame {
@@ -266,12 +337,27 @@ mod tests {
             Arc::new(Mutex::new(k))
         };
         let (a, b) = (keys(0), keys(1));
-        let wire = seal_frame(&a, Video::Camera, 0, 7, true, Codec::H264, b"quadro").unwrap();
+        let wire = seal_frame(&a, Header::video(Video::Camera, 0, 7, true), Codec::H264, b"quadro").unwrap();
         assert!(!wire.windows(6).any(|w| w == b"quadro"));
         let (h, _) = Header::parse(&wire).unwrap();
         assert!(h.keyframe && h.kind == lerri_core::media::Kind::Camera, "o relay lê o cabeçalho");
         let f = open_frame(&b, &wire).unwrap();
-        assert_eq!(f, Frame { from: MemberId([1; 32]), video: Video::Camera, layer: 0, seq: 7, keyframe: true, codec: Codec::H264, data: b"quadro".to_vec() });
+        assert_eq!(
+            f,
+            Frame {
+                from: MemberId([1; 32]),
+                video: Video::Camera,
+                layer: 0,
+                seq: 7,
+                keyframe: true,
+                droppable: false,
+                codec: Codec::H264,
+                data: b"quadro".to_vec()
+            }
+        );
+        let wire = seal_frame(&a, Header::video_droppable(Video::Screen, 0, 7), Codec::Av1, b"extra").unwrap();
+        let f = open_frame(&b, &wire).unwrap();
+        assert!(f.droppable && !f.keyframe && f.seq == 7);
         // Cabeçalho adulterado (ex.: relay marcando keyframe) não decifra.
         let mut bad = wire.clone();
         bad[1] ^= 1;

@@ -88,8 +88,17 @@ impl Active {
 
     fn description(&self) -> String {
         match self {
-            Active::Screen(s) => format!("{} {}×{} · {}", s.codec().name(), s.size.0, s.size.1, s.encoder_name()),
+            Active::Screen(s) => {
+                format!("{} {}×{}{} · {}", s.codec().name(), s.size.0, s.size.1, if s.svc() { " SVC" } else { "" }, s.encoder_name())
+            }
             Active::Camera(c) => c.description(),
+        }
+    }
+
+    fn software(&self) -> bool {
+        match self {
+            Active::Screen(s) => s.software(),
+            Active::Camera(c) => c.software(),
         }
     }
 
@@ -153,6 +162,8 @@ pub struct GpuShare {
     thread: Option<JoinHandle<()>>,
     /// "HEVC 1920×1080 · AMDh265Encoder"
     pub description: String,
+    /// Codificando na CPU: a placa não tem encoder.
+    pub software: bool,
 }
 
 impl GpuShare {
@@ -175,7 +186,7 @@ impl GpuShare {
         let thread =
             std::thread::Builder::new().name(name.into()).spawn(move || share_loop(out, &source, codec, &c, ready_tx))?;
         match ready_rx.recv() {
-            Ok(Ok(description)) => Ok(Self { ctl, thread: Some(thread), description }),
+            Ok(Ok((description, software))) => Ok(Self { ctl, thread: Some(thread), description, software }),
             Ok(Err(e)) => {
                 let _ = thread.join();
                 Err(e)
@@ -221,7 +232,7 @@ fn share_loop(
     source: &Source,
     codec: Codec,
     ctl: &ShareControl,
-    ready: mpsc::SyncSender<anyhow::Result<String>>,
+    ready: mpsc::SyncSender<anyhow::Result<(String, bool)>>,
 ) {
     encode::init_mf();
     let mut rc = match source {
@@ -229,13 +240,14 @@ fn share_loop(
         Source::Camera { .. } => RateControl::camera(),
     };
     let o = out.clone();
-    let on_frame: encode::OnFrame = Arc::new(move |f: EncodedFrame| o.send(f.keyframe, f.codec, &f.data));
+    let on_frame: encode::OnFrame =
+        Arc::new(move |f: EncodedFrame| o.send_frame(lerri_core::media::LAYER_HIGH, f.keyframe, f.droppable, f.codec, &f.data));
     let o = out.clone();
     let on_low: encode::OnFrame =
         Arc::new(move |f: EncodedFrame| o.send_layer(lerri_core::media::LAYER_LOW, f.keyframe, f.codec, &f.data));
     let mut active = match Active::start(source, codec, rc.bitrate, on_frame, on_low) {
         Ok(a) => {
-            let _ = ready.send(Ok(a.description()));
+            let _ = ready.send(Ok((a.description(), a.software())));
             a
         }
         Err(e) => {

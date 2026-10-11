@@ -228,6 +228,11 @@ impl CameraSender {
         format!("{} {}×{} · {} · {}", self.encoder.codec.name(), self.size.0, self.size.1, self.encoder.name, self.camera.name)
     }
 
+    /// Codificando na CPU (a placa não tem encoder).
+    pub fn software(&self) -> bool {
+        self.encoder.software
+    }
+
     pub fn set_bitrate(&mut self, bitrate: u32) {
         if bitrate != self.bitrate {
             self.bitrate = bitrate;

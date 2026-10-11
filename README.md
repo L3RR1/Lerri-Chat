@@ -38,7 +38,7 @@ O Discord é pesado, exige conta, guarda tudo e lê o que quiser. O Lerri Chat �
 |---|---|
 | 💬 **Chat em grupo** | Cifrado com MLS (o protocolo de grupo da IETF). Quem é removido não lê mais nada daí em diante. Histórico local opcional. |
 | 🎙️ **Voz** | Opus, cancelamento de eco (AEC3), supressão de ruído (com modo forte via RNNoise), ganho automático. Transmite quando você fala ou só segurando uma tecla (push-to-talk global, vale com o jogo em foco, qualquer tecla ou botão do mouse). Escolha de microfone e saída. Ondas roxas saindo de quem está falando. |
-| 🖥️ **Tela** | A tela inteira ou uma janela só. Captura e codificação na GPU (HEVC, H.264 ou AV1 conforme a placa), codec negociado pelo que todos conseguem decodificar, bitrate adaptativo e simulcast: quem está com a rede ruim recebe uma versão 360p em vez de travar. 1080p60 gastando 0,1% da CPU. |
+| 🖥️ **Tela** | A tela inteira ou uma janela só. Captura e codificação na GPU (HEVC, H.264 ou AV1 conforme a placa; sem encoder na placa, H.264 por software em 720p30), codec negociado pelo que todos conseguem decodificar, bitrate adaptativo. Rede ruim desce numa escada em vez de travar: com AV1, primeiro metade do fps (SVC), depois uma versão 360p (simulcast). 1080p60 gastando 0,1% da CPU. Até 4 telas e câmeras assistidas ao mesmo tempo, em grade. |
 | 📷 **Câmera** | 720p pelo mesmo caminho da tela. Dá para compartilhar tela e câmera juntas, e assistir às duas. |
 | 🛡️ **Gestão** | O dono convida e remove; remover troca a chave do grupo na hora. Aviso de quem entrou, com o início da chave pública. Latência até cada pessoa ao lado do nome. |
 
@@ -74,7 +74,7 @@ Abra o `lerrichat.exe`:
 - **Criar sala x1:** cria a sala neste PC e mostra o convite (link + QR).
 - **Criar sala num servidor:** cole o link de administração que o `lerrichat-host` mostra.
 
-Na sala, a barra de baixo controla voz, tela e câmera. O botão de ajustes ao lado da voz abre **Voz e áudio** (microfone, saída, push-to-talk e supressão forte); a setinha ao lado de **Compartilhar tela** escolhe a tela ou uma janela. Quem compartilha ganha um botão **Assistir** (ou **Câmera**) na lista de membros.
+Na sala, a barra de baixo controla voz, tela e câmera. O botão de ajustes ao lado da voz abre **Voz e áudio** (microfone, saída, push-to-talk e supressão forte); a setinha ao lado de **Compartilhar tela** escolhe a tela ou uma janela. Quem compartilha ganha um botão **Assistir** (ou **Câmera**) na lista de membros; dá para assistir a até 4 ao mesmo tempo, e cada vídeo tem o seu **Fechar**.
 
 <p align="center">
   <img src="docs/inicio.png" width="410" alt="Tela inicial">

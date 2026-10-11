@@ -66,6 +66,17 @@ export struct MemberRow {
     latency: int,
 }
 
+// Um vídeo assistido na grade da sala. A posição (relativa à grade) vem do
+// Rust, que também põe a janela-filha (D3D11) em cima da caixa preta.
+export struct VideoTile {
+    label: string,
+    camera: bool,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
 // Ícones: Tabler Icons 3.47.0 (MIT, icons/LICENSE), traço de 2 px, rasterizados
 // em PNG de 48 px (o SVG puxaria o resvg para o binário). O `colorize` pinta.
 component Icon inherits Image {
@@ -1051,31 +1062,30 @@ component RoomView inherits VerticalLayout {
     // As primeiras `monitor-count` opções do menu são telas; o resto, janelas.
     in property <int> monitor-count;
     callback share-menu-opened();
-    in property <string> watching-label;
     callback share-screen();
     callback stop-screen();
     callback watch-member(int);
-    callback unwatch();
+    callback unwatch-member(int);
     // Câmera: a nossa e a que assistimos.
     in property <bool> camera-on;
     in property <string> camera-info;
     in property <int> camera-watchers;
     in property <[string]> cameras;
     in-out property <int> camera-index;
-    in property <string> watching-cam-label;
     callback start-camera();
     callback stop-camera();
     callback watch-camera(int);
-    callback unwatch-camera();
-    // Onde as janelas de vídeo (filhas, D3D11) ficam, em pixels lógicos.
-    out property <length> video-x: video-box.absolute-position.x;
-    out property <length> video-y: video-box.absolute-position.y;
-    out property <length> video-width: video-box.width;
-    out property <length> video-height: video-box.height;
-    out property <length> cam-x: cam-box.absolute-position.x;
-    out property <length> cam-y: cam-box.absolute-position.y;
-    out property <length> cam-width: cam-box.width;
-    out property <length> cam-height: cam-box.height;
+    callback unwatch-camera(int);
+    // Vídeos assistidos (telas e câmeras juntas), em grade.
+    in property <[VideoTile]> tiles;
+    in property <int> max-tiles: 4;
+    callback close-tile(int);
+    // Área da grade, em pixels lógicos: o Rust divide em células e põe as
+    // janelas de vídeo (filhas, D3D11) em cima delas.
+    out property <length> stage-x: stage.absolute-position.x;
+    out property <length> stage-y: stage.absolute-position.y;
+    out property <length> stage-width: stage.width;
+    out property <length> stage-height: stage.height;
 
     property <bool> confirm-leave;
     property <int> confirm-remove: -1;
@@ -1355,58 +1365,67 @@ component RoomView inherits VerticalLayout {
                 }
             }
 
-            // Vídeo assistido: tela à esquerda, câmera à direita. Cada imagem é
-            // uma janela-filha (D3D11) posta em cima da sua caixa; a UI não
-            // desenha nada ali. Sem nada assistido, altura zero.
+            // Vídeos assistidos, em grade (telas e câmeras juntas). Cada imagem
+            // é uma janela-filha (D3D11) que o Rust põe em cima da caixa preta
+            // da célula; a UI não desenha nada ali. Sem nada, altura zero.
             Rectangle {
-                property <bool> any: root.watching-label != "" || root.watching-cam-label != "";
+                property <bool> any: root.tiles.length > 0;
                 vertical-stretch: any ? 3 : 0;
                 max-height: any ? 100000px : 0px;
-                // Sem isto, as duas colunas vazias (max-width 0) limitam a largura
-                // da coluna inteira e sobra uma faixa à direita da sala.
+                // Sem isto a grade vazia limita a largura da coluna inteira e
+                // sobra uma faixa à direita da sala.
                 max-width: 100000px;
-                min-height: any ? 240px : 0px;
+                min-height: !any ? 0px : root.tiles.length > 2 ? 380px : 240px;
                 background: Theme.surface;
                 border-radius: Theme.r-panel;
                 border-width: any ? 1px : 0px;
                 border-color: Theme.border;
                 clip: true;
-                HorizontalLayout {
-                    visible: parent.any;
-                    padding: 10px;
-                    spacing: 10px;
-                    VerticalLayout {
-                        horizontal-stretch: root.watching-label != "" ? 3 : 0;
-                        max-width: root.watching-label != "" ? 100000px : 0px;
-                        spacing: 8px;
+                stage := Rectangle {
+                    x: 10px;
+                    y: 10px;
+                    width: max(0px, parent.width - 20px);
+                    height: max(0px, parent.height - 20px);
+                    for t[i] in root.tiles: Rectangle {
+                        x: t.x;
+                        y: t.y;
+                        width: t.width;
+                        height: t.height;
+                        // 30 px de cabeçalho + 8 de espaço: o Rust põe o vídeo
+                        // logo abaixo (HEADER em video.rs).
                         HorizontalLayout {
+                            y: 0px;
+                            height: 30px;
                             spacing: 8px;
-                            VerticalLayout { alignment: center; Icon { source: @image-url("icons/screen-share.png"); colorize: Theme.violet-bright; width: 16px; height: 16px; } }
-                            Text { text: "Tela de " + root.watching-label; color: Theme.text; font-weight: 600; vertical-alignment: center; overflow: elide; }
-                            Rectangle { }
-                            Btn { compact: true; text: "Fechar"; icon: @image-url("icons/x.png"); clicked => { root.unwatch(); } }
+                            VerticalLayout {
+                                alignment: center;
+                                Icon {
+                                    source: t.camera ? @image-url("icons/video.png") : @image-url("icons/screen-share.png");
+                                    colorize: Theme.violet-bright;
+                                    width: 16px;
+                                    height: 16px;
+                                }
+                            }
+                            Text {
+                                text: (t.camera ? "Câmera de " : "Tela de ") + t.label;
+                                color: Theme.text;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            Btn {
+                                compact: true;
+                                text: t.width < 260px ? "" : "Fechar";
+                                label: "Fechar " + (t.camera ? "câmera de " : "tela de ") + t.label;
+                                icon: @image-url("icons/x.png");
+                                clicked => { root.close-tile(i); }
+                            }
                         }
-                        video-box := Rectangle {
-                            vertical-stretch: 1;
-                            background: Theme.ink;
-                            border-radius: Theme.r-control;
-                            Text { text: "Aguardando a imagem…"; color: Theme.text-dim; }
-                        }
-                    }
-                    VerticalLayout {
-                        horizontal-stretch: root.watching-cam-label != "" ? 1 : 0;
-                        max-width: root.watching-cam-label != "" ? 100000px : 0px;
-                        min-width: root.watching-cam-label != "" ? 220px : 0px;
-                        spacing: 8px;
-                        HorizontalLayout {
-                            spacing: 8px;
-                            VerticalLayout { alignment: center; Icon { source: @image-url("icons/video.png"); colorize: Theme.violet-bright; width: 16px; height: 16px; } }
-                            Text { text: "Câmera de " + root.watching-cam-label; color: Theme.text; font-weight: 600; vertical-alignment: center; overflow: elide; }
-                            Rectangle { }
-                            Btn { compact: true; text: "Fechar"; icon: @image-url("icons/x.png"); clicked => { root.unwatch-camera(); } }
-                        }
-                        cam-box := Rectangle {
-                            vertical-stretch: 1;
+                        Rectangle {
+                            y: 38px;
+                            width: parent.width;
+                            height: max(0px, parent.height - 38px);
                             background: Theme.ink;
                             border-radius: Theme.r-control;
                             Text { text: "Aguardando a imagem…"; color: Theme.text-dim; }
@@ -1555,20 +1574,23 @@ component RoomView inherits VerticalLayout {
                             spacing: 6px;
                             alignment: start;
                             padding-left: 48px;
+                            // Com a grade cheia, só dá para fechar.
                             if m.sharing && !m.me && root.watch-problem == "": Btn {
                                 compact: true;
                                 text: m.watching ? "Fechar tela" : "Assistir";
                                 tonal: !m.watching;
+                                enabled: m.watching || root.tiles.length < root.max-tiles;
                                 clicked => {
-                                    if (m.watching) { root.unwatch(); } else { root.watch-member(i); }
+                                    if (m.watching) { root.unwatch-member(i); } else { root.watch-member(i); }
                                 }
                             }
                             if m.camera && !m.me && root.watch-problem == "": Btn {
                                 compact: true;
                                 text: m.watching-camera ? "Fechar câmera" : "Câmera";
                                 tonal: !m.watching-camera;
+                                enabled: m.watching-camera || root.tiles.length < root.max-tiles;
                                 clicked => {
-                                    if (m.watching-camera) { root.unwatch-camera(); } else { root.watch-camera(i); }
+                                    if (m.watching-camera) { root.unwatch-camera(i); } else { root.watch-camera(i); }
                                 }
                             }
                             if root.is-owner && !m.me && !m.waiting && root.confirm-remove != i: Btn {
@@ -1931,21 +1953,17 @@ export component AppWindow inherits Window {
     in-out property <int> monitor-index;
     in property <int> monitor-count;
     callback share-menu-opened();
-    in property <string> watching-label;
-    out property <length> video-x: room-view.video-x;
-    out property <length> video-y: room-view.video-y;
-    out property <length> video-width: room-view.video-width;
-    out property <length> video-height: room-view.video-height;
     in property <bool> camera-on;
     in property <string> camera-info;
     in property <int> camera-watchers;
     in property <[string]> cameras;
     in-out property <int> camera-index;
-    in property <string> watching-cam-label;
-    out property <length> cam-x: room-view.cam-x;
-    out property <length> cam-y: room-view.cam-y;
-    out property <length> cam-width: room-view.cam-width;
-    out property <length> cam-height: room-view.cam-height;
+    in property <[VideoTile]> tiles;
+    in property <int> max-tiles: 4;
+    out property <length> stage-x: room-view.stage-x;
+    out property <length> stage-y: room-view.stage-y;
+    out property <length> stage-width: room-view.stage-width;
+    out property <length> stage-height: room-view.stage-height;
 
     callback join();
     callback create-x1();
@@ -1966,16 +1984,25 @@ export component AppWindow inherits Window {
     callback share-screen();
     callback stop-screen();
     callback watch-member(int);
-    callback unwatch();
+    callback unwatch-member(int);
     callback start-camera();
     callback stop-camera();
     callback watch-camera(int);
-    callback unwatch-camera();
+    callback unwatch-camera(int);
+    callback close-tile(int);
     callback scroll-chat-to-end();
     scroll-chat-to-end => { room-view.scroll-to-end(); }
 
     init => {
         Palette.color-scheme = ColorScheme.dark;
+    }
+
+    // Trocar isto redesenha a janela inteira. O Rust troca quando uma janela
+    // de vídeo (filha) sai de cima de uma área: o renderer só repinta o que
+    // mudou, e o que ele pintou embaixo da janela-filha nunca chegou à tela.
+    in property <bool> repaint-all;
+    Rectangle {
+        background: root.repaint-all ? #00000001 : transparent;
     }
 
     VerticalLayout {
@@ -2085,13 +2112,13 @@ export component AppWindow inherits Window {
                 monitor-index <=> root.monitor-index;
                 monitor-count: root.monitor-count;
                 share-menu-opened => { root.share-menu-opened(); }
-                watching-label: root.watching-label;
                 camera-on: root.camera-on;
                 camera-info: root.camera-info;
                 camera-watchers: root.camera-watchers;
                 cameras: root.cameras;
                 camera-index <=> root.camera-index;
-                watching-cam-label: root.watching-cam-label;
+                tiles: root.tiles;
+                max-tiles: root.max-tiles;
                 join-voice => { root.join-voice(); }
                 leave-voice => { root.leave-voice(); }
                 toggle-mute => { root.toggle-mute(); }
@@ -2100,11 +2127,12 @@ export component AppWindow inherits Window {
                 share-screen => { root.share-screen(); }
                 stop-screen => { root.stop-screen(); }
                 watch-member(i) => { root.watch-member(i); }
-                unwatch => { root.unwatch(); }
+                unwatch-member(i) => { root.unwatch-member(i); }
                 start-camera => { root.start-camera(); }
                 stop-camera => { root.stop-camera(); }
                 watch-camera(i) => { root.watch-camera(i); }
-                unwatch-camera => { root.unwatch-camera(); }
+                unwatch-camera(i) => { root.unwatch-camera(i); }
+                close-tile(i) => { root.close-tile(i); }
                 new-invite => { root.new-invite(); }
                 copy-invite => { root.copy-invite(); }
                 send-chat => { root.send-chat(); }

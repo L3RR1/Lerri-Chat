@@ -141,11 +141,14 @@ struct View {
     layer: u8,
     /// Na camada baixa: desde quando não atrasa.
     calm_since: Option<Instant>,
+    /// `Some`: recebe só a camada temporal de base (SVC), sem os quadros
+    /// descartáveis; guarda a última vez que atrasou.
+    thin: Option<Instant>,
 }
 
 impl View {
     fn new() -> Self {
-        Self { resume: Some(Resume::WaitingKey), layer: media::LAYER_HIGH, calm_since: None }
+        Self { resume: Some(Resume::WaitingKey), layer: media::LAYER_HIGH, calm_since: None, thin: None }
     }
 
     /// O cabeçalho de um quadro acabou de chegar: se é o keyframe que este
@@ -167,12 +170,29 @@ struct Route {
     switched: bool,
 }
 
-/// Decide um quadro para um membro. Atrasado na camada alta da tela, cai
-/// para a baixa; na baixa e sem atrasar por [`UPGRADE_AFTER`], volta. Sem
-/// simulcast (câmera), só pula quadros até o próximo keyframe.
+/// Decide um quadro para um membro, numa escada para quem atrasa:
+/// 1. com SVC, para de receber os quadros descartáveis (metade do fps), sem
+///    keyframe nenhum, já com metade do limite em trânsito;
+/// 2. atrasado na camada alta da tela, cai para a baixa (simulcast); na baixa
+///    e sem atrasar por [`UPGRADE_AFTER`], volta;
+/// 3. sem simulcast (câmera), pula quadros até o próximo keyframe.
 fn route(v: &mut View, header: &media::Header, simulcast: bool, in_flight: usize, limit: usize, now: Instant) -> Route {
     if header.layer != v.layer {
         return Route::default();
+    }
+    if in_flight >= limit.div_ceil(2) {
+        v.thin = Some(now);
+    } else if in_flight <= 1 && v.thin.is_some_and(|t| now.duration_since(t) >= UPGRADE_AFTER) {
+        v.thin = None;
+    }
+    if header.droppable {
+        let send = v.thin.is_none()
+            && match v.resume {
+                None => true,
+                Some(Resume::WaitingKey) => false,
+                Some(Resume::From(k)) => !seq_before(header.seq, k),
+            };
+        return Route { send, ..Route::default() };
     }
     let waiting = v.resume == Some(Resume::WaitingKey);
     let send = match (header.keyframe, v.resume) {
@@ -204,7 +224,7 @@ fn route(v: &mut View, header: &media::Header, simulcast: bool, in_flight: usize
     if v.layer == media::LAYER_LOW {
         v.calm_since = Some(now);
     } else if simulcast {
-        *v = View { resume: Some(Resume::WaitingKey), layer: media::LAYER_LOW, calm_since: Some(now) };
+        *v = View { resume: Some(Resume::WaitingKey), layer: media::LAYER_LOW, calm_since: Some(now), thin: Some(now) };
         return Route { send: false, congested: true, switched: true };
     }
     Route { congested: true, ..Route::default() }
@@ -917,6 +937,37 @@ mod tests {
         let r = deliver(&mut v, h(LAYER_HIGH, 3, false), 0, t);
         assert_eq!(r, Route { send: false, congested: true, switched: false }, "pede keyframe, mas não troca de camada");
         assert_eq!(v.layer, LAYER_HIGH);
+    }
+
+    #[test]
+    fn svc_drops_the_top_temporal_layer_first() {
+        let t = Instant::now();
+        let mut v = View::new();
+        let d = |seq| Header::video_droppable(Video::Screen, LAYER_HIGH, seq);
+        assert!(!deliver(&mut v, d(9), 0, t).send, "antes do keyframe, nada");
+        assert!(deliver(&mut v, h(LAYER_HIGH, 10, true), 0, t).send);
+        assert!(deliver(&mut v, d(10), 0, t).send);
+        assert!(deliver(&mut v, h(LAYER_HIGH, 11, false), 0, t).send);
+
+        // Metade do limite em trânsito: os descartáveis param, sem keyframe
+        // nem troca de camada; a base continua.
+        let half = MAX_IN_FLIGHT / 2;
+        assert_eq!(deliver(&mut v, d(11), half, t), Route::default());
+        assert_eq!(deliver(&mut v, h(LAYER_HIGH, 12, false), half, t), Route { send: true, ..Route::default() });
+        assert!(!deliver(&mut v, d(12), 0, t + Duration::from_secs(2)).send, "continua magro mesmo com a fila vazia");
+        assert_eq!(v.layer, LAYER_HIGH);
+
+        // Atrasando de verdade, a escada continua: camada baixa do simulcast.
+        let r = deliver(&mut v, h(LAYER_HIGH, 13, false), MAX_IN_FLIGHT, t);
+        assert!(r.switched && v.layer == LAYER_LOW);
+
+        // Numa view nova, 10 s calmo devolve os descartáveis.
+        let mut v = View::new();
+        deliver(&mut v, h(LAYER_HIGH, 20, true), 0, t);
+        deliver(&mut v, d(20), half, t);
+        let later = t + UPGRADE_AFTER;
+        assert!(deliver(&mut v, h(LAYER_HIGH, 21, false), 0, later).send);
+        assert!(deliver(&mut v, d(21), 0, later).send);
     }
 
     #[test]

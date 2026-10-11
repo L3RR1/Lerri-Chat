@@ -17,6 +17,10 @@ use super::encode::{Encoder, OnFrame};
 
 /// Maior resolução transmitida (SPEC-04 §2: 1080p).
 pub const MAX_SIZE: (u32, u32) = (1920, 1080);
+/// Com o encoder por software (sem encoder na placa): 720p30, que a CPU
+/// aguenta sem atrapalhar o resto da máquina.
+pub const SOFTWARE_SIZE: (u32, u32) = (1280, 720);
+pub const SOFTWARE_FPS: u32 = 30;
 /// Camada baixa do simulcast: para quem está com a rede ruim.
 pub const LOW_SIZE: (u32, u32) = (640, 360);
 const LOW_BITRATE: u32 = 400_000;
@@ -77,7 +81,8 @@ pub struct Sender {
 
 impl Sender {
     /// `on_low`: para onde vão os quadros da camada baixa do simulcast
-    /// (`None`: sem simulcast).
+    /// (`None`: sem simulcast). Sem encoder na placa, vai por software em
+    /// [`SOFTWARE_SIZE`] e [`SOFTWARE_FPS`], sem camada baixa.
     pub fn start(
         d3d: &D3D,
         target: Target,
@@ -88,7 +93,9 @@ impl Sender {
         on_low: Option<OnFrame>,
     ) -> anyhow::Result<Self> {
         let capture = Capture::start(d3d, target)?;
-        let size = target_size(capture.size);
+        let software = !super::encode::has_hardware(codec);
+        let (size, fps, on_low) =
+            if software { (fit_even(capture.size, SOFTWARE_SIZE), fps.min(SOFTWARE_FPS), None) } else { (target_size(capture.size), fps, on_low) };
         let encoder = Encoder::new(d3d, codec, size, fps, bitrate, on_frame.clone())?;
         let ring = (0..RING).map(|_| d3d.texture(size.0, size.1, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET)).collect::<Result<_, _>>()?;
         let low = match on_low {
@@ -159,6 +166,16 @@ impl Sender {
         &self.encoder.name
     }
 
+    /// Codificando na CPU (a placa não tem encoder).
+    pub fn software(&self) -> bool {
+        self.encoder.software
+    }
+
+    /// Duas camadas temporais (SVC).
+    pub fn svc(&self) -> bool {
+        self.encoder.svc
+    }
+
     pub fn set_bitrate(&mut self, bitrate: u32) {
         if bitrate != self.bitrate {
             self.bitrate = bitrate;
@@ -170,6 +187,12 @@ impl Sender {
     /// encoder e o próximo quadro sai como keyframe.
     pub fn set_codec(&mut self, codec: Codec) -> anyhow::Result<()> {
         if codec != self.encoder.codec {
+            // O tamanho e o fps foram escolhidos para o encoder de agora.
+            anyhow::ensure!(
+                self.encoder.software || super::encode::has_hardware(codec),
+                "sem encoder de hardware para {}",
+                codec.name()
+            );
             self.encoder = Encoder::new(&self.d3d, codec, self.size, self.fps, self.bitrate, self.on_frame.clone())?;
             if let Some(low) = &mut self.low {
                 // Recriado no próximo quadro, já no codec novo e com keyframe.

@@ -56,7 +56,7 @@ Cascata de codec por hardware, detectada em runtime:
 1. **AV1** por hardware — melhor compressão. Disponível em NVIDIA RTX 40+, AMD RX 7000+, Intel Arc. *(A RX 6700 XT do Lerri NÃO codifica AV1 — cai pro próximo. Ela **decodifica** AV1.)*
 2. **HEVC (H.265)** por hardware — **AMF** na AMD (RX 6700 XT usa este), **NVENC** na NVIDIA, **Quick Sync** na Intel.
 3. **H.264** por hardware — compatibilidade máxima.
-4. **OpenH264 por software** — só último caso, com aviso de que vai pesar.
+4. **H.264 por software** — só último caso, com aviso de que vai pesar. *Implementado com o encoder H.264 que vem no Windows (Media Foundation), não com o OpenH264 (ver `SPEC-01` §1): síncrono, uma cópia GPU→CPU por quadro (textura de leitura), no modo mais rápido. A tela vai em até 720p30 e sem camada baixa (dois encoders na CPU pesariam o dobro); a câmera já é 720p30. Medido no Ryzen de referência: ~10 ms por quadro 720p. `LERRICHAT_SOFTWARE_ENCODE=1` finge que a placa não tem encoder, para testar esse caminho. Falta nas edições "N" do Windows sem o Media Feature Pack.*
 
 ### Negociação de codec
 - O que importa é o que o **receptor decodifica**, não só o que o transmissor codifica.
@@ -122,6 +122,7 @@ A C920 de referência entrega 15 fps num quarto escuro (a exposição automátic
   - o relay decide por pessoa: quem atrasa na alta cai para a baixa a partir do keyframe dela, e volta depois de 10 s sem atrasar;
   - cada camada tem a sua sequência, e o receptor troca de camada num keyframe, com decoder novo;
   - a câmera não tem simulcast (já é leve, e cai antes da tela).
+- **Várias telas ao mesmo tempo:** até 4 vídeos (telas e câmeras juntas), cada um com decoder, thread e janela-filha próprios. O Rust divide a área numa grade (as colunas que deixam cada vídeo 16:9 maior; última linha centralizada) e passa a posição de cada célula ao Slint, que só desenha cabeçalho e caixa preta. Mover ou fechar uma janela-filha força um redesenho da janela inteira: o renderer só repinta o que mudou, e o que ele pinta embaixo de uma janela-filha não chega à tela.
 - Compartilhar **uma janela só**: o mesmo caminho do WGC (`CreateForWindow`). Fechar a janela encerra o compartilhamento com aviso; redimensionar encaixa a imagem no tamanho inicial, com barras.
 
 ## 5. Simulcast (resumo; rede em SPEC-03)
@@ -129,7 +130,12 @@ A C920 de referência entrega 15 fps num quarto escuro (a exposição automátic
 - **Só no modo servidor.** No x1 há um único receptor e o transmissor adapta o bitrate direto.
 - Transmissor envia 2–3 qualidades da mesma fonte. Cada camada é uma **sessão de encoder** separada.
 - GPUs NVIDIA de consumo limitam o número de sessões NVENC simultâneas. Tela + câmera com 3 camadas cada são 6 sessões. O app conta as sessões disponíveis e reduz camadas se precisar.
-- Onde houver **AV1 com SVC** (escalabilidade temporal/espacial num único stream), preferir SVC a simulcast: uma sessão de encoder só.
+- Onde houver **AV1 com SVC** (escalabilidade temporal/espacial num único stream), preferir SVC a simulcast: uma sessão de encoder só. *Implementado depois da Fase 6, temporal (L1T2):*
+  - o encoder AV1 recebe `CODECAPI_AVEncVideoMaxTemporalLayers`/`TemporalLayerCount` = 2; se aceitar, metade dos quadros (camada temporal 1) não é referência para ninguém;
+  - a camada é lida do próprio bitstream (extensão do cabeçalho da OBU de quadro; no HEVC, `nuh_temporal_id_plus1`) e vai no cabeçalho em claro como "descartável" (bit 2 do byte 1, compatível com quem não conhece o bit);
+  - o descartável leva a sequência do quadro de base de que depende, sem avançá-la: o relay corta e o receptor não vê buraco;
+  - o relay desce uma escada para quem atrasa: com metade do limite em trânsito, para de mandar os descartáveis (metade do fps, sem keyframe); atrasando de verdade, cai para a camada baixa do simulcast (que só é codificada se alguém precisar); 10 s calmo, sobe de volta;
+  - ligado por padrão só no AV1. O mecanismo foi testado ponta a ponta com o HEVC da RX 6700 XT (AMF aceita L1T2: só a base decodifica sem erro); o AV1 por hardware não dá para testar aqui (a placa não codifica AV1). O H.264 da AMD aceita a configuração mas não marca a camada no bitstream, então nada sai descartável.
 - SFU encaminha a camada adequada por destinatário, lendo o cabeçalho SFrame em claro.
 - Degradação graciosa: quem tem internet ruim recebe 360p em vez de travar.
 

@@ -56,7 +56,6 @@ struct App {
     /// Membros mostrados agora (para o botão "Remover" achar o id).
     members: Arc<Mutex<Vec<MemberView>>>,
     /// O que estamos assistindo (para os botões "Fechar" acharem o membro).
-    watching: Arc<Mutex<Vec<(MemberId, Video)>>>,
     /// Microfones e saídas mostrados no painel "Voz e áudio" (sem o "Padrão").
     audio: Arc<Mutex<(Vec<String>, Vec<String>)>>,
 }
@@ -82,7 +81,6 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         room: RefCell::new(None),
         saved: RefCell::new(Vec::new()),
         members: Arc::default(),
-        watching: Arc::default(),
         audio: Arc::default(),
     });
     app.refresh_saved();
@@ -195,9 +193,16 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     let a = app.clone();
     ui.on_watch_camera(move |i| a.watch(i as usize, Video::Camera));
     let a = app.clone();
-    ui.on_unwatch(move || a.unwatch(Video::Screen));
+    ui.on_unwatch_member(move |i| a.unwatch(i as usize, Video::Screen));
     let a = app.clone();
-    ui.on_unwatch_camera(move || a.unwatch(Video::Camera));
+    ui.on_unwatch_camera(move |i| a.unwatch(i as usize, Video::Camera));
+    let a = app.clone();
+    ui.on_close_tile(move |i| {
+        if let Some((member, video)) = video::tile(i as usize) {
+            a.send(Command::Unwatch { member, video });
+        }
+    });
+    ui.set_max_tiles(video::MAX_TILES as i32);
     // As janelas-filhas de vídeo acompanham suas áreas na tela da sala.
     let a = app.clone();
     let follow = slint::Timer::default();
@@ -249,22 +254,28 @@ impl App {
         self.ui.upgrade().expect("janela existe enquanto o event loop roda")
     }
 
-    /// Assiste à tela ou à câmera do membro `i` da lista: mostra a área no
-    /// painel, espera o layout e põe a janela-filha em cima dela.
+    /// Assiste à tela ou à câmera do membro `i` da lista: abre uma célula
+    /// na grade, espera o layout e põe a janela-filha em cima dela.
     fn watch(self: &Rc<Self>, i: usize, video: Video) {
         let Some(m) = self.members.lock().unwrap().get(i).cloned() else { return };
-        // Se já mostrava outro do mesmo tipo, a sala troca e devolve a janela
-        // antiga (VideoClosed), que não é mais a registrada para o tipo.
-        set_watching_label(&self.ui(), video, m.label());
+        if !video::add(&self.ui(), m.id, video, m.label()) {
+            return; // já na grade, ou a grade está cheia (o botão fica apagado)
+        }
         let app = self.clone();
         slint::Timer::single_shot(Duration::from_millis(80), move || {
             let ui = app.ui();
-            match video::open(&ui, video) {
+            // As outras células encolheram para dar lugar a esta.
+            for change in video::follow(&ui) {
+                if let video::Change::Resized { window, size } = change {
+                    app.send(Command::VideoResize { window, size });
+                }
+            }
+            match video::open(&ui, m.id, video) {
                 Ok((hwnd, size)) => {
                     app.send(Command::Watch { member: m.id, video, target: WatchTarget::Window { hwnd, size } })
                 }
                 Err(e) => {
-                    set_watching_label(&ui, video, String::new());
+                    video::remove(&ui, m.id, video);
                     ui.set_error_text(format!("não deu para abrir o vídeo: {e:#}").into());
                 }
             }
@@ -323,8 +334,9 @@ impl App {
         });
     }
 
-    fn unwatch(&self, video: Video) {
-        let member = self.watching.lock().unwrap().iter().find(|(_, v)| *v == video).map(|(m, _)| *m);
+    /// Fecha a tela ou a câmera do membro `i` da lista.
+    fn unwatch(&self, i: usize, video: Video) {
+        let member = self.members.lock().unwrap().get(i).map(|m| m.id);
         if let Some(member) = member {
             self.send(Command::Unwatch { member, video });
         }
@@ -380,16 +392,11 @@ impl App {
         let (done_tx, done) = oneshot::channel();
         *self.room.borrow_mut() = Some(ActiveRoom { cmds, done });
 
-        let (weak, identity, data_dir, members, watching) = (
-            self.ui.clone(),
-            self.identity.clone(),
-            self.data_dir.clone(),
-            self.members.clone(),
-            self.watching.clone(),
-        );
+        let (weak, identity, data_dir, members) =
+            (self.ui.clone(), self.identity.clone(), self.data_dir.clone(), self.members.clone());
         self.rt.spawn(async move {
             let error = match open_room(start, &identity, &data_dir, &weak).await {
-                Ok(ctx) => match run_room(ctx, rx, &weak, &data_dir, members, watching).await {
+                Ok(ctx) => match run_room(ctx, rx, &weak, &data_dir, members).await {
                     Exit::Closed | Exit::Left => None,
                     Exit::Removed => Some("Você foi removido da sala pelo dono.".to_string()),
                     Exit::Disconnected(reason) => Some(disconnect_reason(&reason)),
@@ -402,10 +409,9 @@ impl App {
                 ui.set_voice_devices("".into());
                 ui.set_screen_sharing(false);
                 ui.set_screen_info("".into());
-                ui.set_watching_label("".into());
+                video::clear(&ui);
                 ui.set_camera_on(false);
                 ui.set_camera_info("".into());
-                ui.set_watching_cam_label("".into());
                 if let Some(e) = error {
                     ui.set_error_text(e.into());
                 }
@@ -567,7 +573,6 @@ async fn run_room(
     ui: &Weak<AppWindow>,
     data_dir: &std::path::Path,
     shared_members: Arc<Mutex<Vec<MemberView>>>,
-    shared_watching: Arc<Mutex<Vec<(MemberId, Video)>>>,
 ) -> Exit {
     let RoomCtx { session, core, x1, invite_host, first_invite, reach } = ctx;
     {
@@ -648,11 +653,7 @@ async fn run_room(
                 return;
             }
             RoomEvent::VideoClosed { window } => {
-                let _ = w1.upgrade_in_event_loop(move |ui| {
-                    if let Some(video) = video::closed(window) {
-                        set_watching_label(&ui, video, String::new());
-                    }
-                });
+                let _ = w1.upgrade_in_event_loop(move |ui| video::closed(&ui, window));
                 return;
             }
             RoomEvent::Stream { video, view } => {
@@ -676,7 +677,6 @@ async fn run_room(
                 return;
             }
             RoomEvent::Watching(list) => {
-                *shared_watching.lock().unwrap() = list.clone();
                 v.watching = list;
             }
             RoomEvent::Members(m) => {
@@ -803,14 +803,6 @@ fn refresh_share_targets(ui: &AppWindow) {
         Some(i) => ui.set_monitor_index((monitors + i) as i32),
         None if previous.is_some() => ui.set_monitor_index(0),
         None => {}
-    }
-}
-
-/// Nome no topo da área de vídeo do tipo; vazio esconde a área.
-fn set_watching_label(ui: &AppWindow, video: Video, label: String) {
-    match video {
-        Video::Screen => ui.set_watching_label(label.into()),
-        Video::Camera => ui.set_watching_cam_label(label.into()),
     }
 }
 

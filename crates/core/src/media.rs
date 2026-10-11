@@ -7,7 +7,8 @@
 //!
 //! ```text
 //! byte 0: versão (4 bits) | tipo de stream (4 bits)
-//! byte 1: bit 0 keyframe, bit 1 início de fala, bits 4–5 camada de simulcast
+//! byte 1: bit 0 keyframe, bit 1 início de fala, bit 2 descartável (camada
+//!         temporal de cima do SVC), bits 4–5 camada de simulcast
 //! byte 2–3: número de sequência (u16, big-endian, dá a volta)
 //! ```
 
@@ -32,17 +33,22 @@ pub struct Header {
     /// Primeiro pacote depois de silêncio (VAD): o receptor reinicia o
     /// buffer de jitter.
     pub start: bool,
+    /// Quadro da camada temporal de cima (SVC): nenhum outro depende dele, e
+    /// o relay corta esses primeiro de quem está atrasado. Leva a sequência
+    /// do último quadro não descartável, sem avançá-la.
+    pub droppable: bool,
     pub layer: u8,
     pub seq: u16,
 }
 
 impl Header {
     pub fn voice(seq: u16, start: bool) -> Self {
-        Self { kind: Kind::Voice, keyframe: false, start, layer: 0, seq }
+        Self { kind: Kind::Voice, keyframe: false, start, droppable: false, layer: 0, seq }
     }
 
     pub fn encode(&self) -> [u8; HEADER_LEN] {
-        let flags = u8::from(self.keyframe) | (u8::from(self.start) << 1) | ((self.layer & 0x03) << 4);
+        let flags =
+            u8::from(self.keyframe) | (u8::from(self.start) << 1) | (u8::from(self.droppable) << 2) | ((self.layer & 0x03) << 4);
         let seq = self.seq.to_be_bytes();
         [(VERSION << 4) | self.kind as u8, flags, seq[0], seq[1]]
     }
@@ -64,6 +70,7 @@ impl Header {
             kind,
             keyframe: head[1] & 0x01 != 0,
             start: head[1] & 0x02 != 0,
+            droppable: head[1] & 0x04 != 0,
             layer: (head[1] >> 4) & 0x03,
             seq: u16::from_be_bytes([head[2], head[3]]),
         };
@@ -77,7 +84,9 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let h = Header { kind: Kind::Screen, keyframe: true, start: false, layer: 2, seq: 0xbeef };
+        let h = Header { kind: Kind::Screen, keyframe: true, start: false, droppable: false, layer: 2, seq: 0xbeef };
+        let d = Header { keyframe: false, droppable: true, ..h };
+        assert_eq!(Header::parse(&d.encode()), Some((d, [].as_slice())));
         let mut wire = h.encode().to_vec();
         wire.extend_from_slice(b"quadro");
         assert_eq!(Header::parse(&wire), Some((h, b"quadro".as_slice())));
@@ -167,7 +176,13 @@ pub const LAYER_LOW: u8 = 1;
 
 impl Header {
     pub fn video(video: Video, layer: u8, seq: u16, keyframe: bool) -> Self {
-        Self { kind: video.kind(), keyframe, start: false, layer, seq }
+        Self { kind: video.kind(), keyframe, start: false, droppable: false, layer, seq }
+    }
+
+    /// Quadro descartável da camada temporal de cima (SVC), pendurado no
+    /// quadro `seq`.
+    pub fn video_droppable(video: Video, layer: u8, seq: u16) -> Self {
+        Self { droppable: true, ..Self::video(video, layer, seq, false) }
     }
 }
 

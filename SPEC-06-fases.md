@@ -115,7 +115,7 @@ Limitações conhecidas: o binário chegou a 24,85 MiB, perto do limite de 25 (`
 
 Escopo:
 - Captura WGC/DXGI na GPU — `RF-07`, `SPEC-04` §2.
-- Encode HW em cascata (AV1→HEVC→H.264→OpenH264). RX 6700 XT = HEVC/AMF.
+- Encode HW em cascata (AV1→HEVC→H.264→H.264 por software). RX 6700 XT = HEVC/AMF.
 - Negociação de codec pelo denominador comum de decode dos receptores.
 - Encoding adaptativo: framerate guiado pelo WGC em tela estática, bitrate adaptativo com movimento, keyframe sob pedido.
 - Simulcast 2–3 camadas (só modo servidor) + seleção por destinatário no SFU; AV1 SVC onde houver.
@@ -130,7 +130,7 @@ Aceite:
 - [x] Encoder certo escolhido automaticamente por GPU. *Enumera os MFTs de hardware do Media Foundation. Na RX 6700 XT escolhe AMDh265Encoder / AMDh264Encoder. Só testado em AMD.*
 - [ ] Receptor sem decode HEVC entra na sala e o transmissor desce de codec sozinho. *Implementado: cada membro anuncia o que decodifica pelo MLS, o transmissor renegocia a cada 250 ms e recria o encoder com keyframe. A negociação e os dois encoders (HEVC e H.264) estão testados; falta um receptor real sem HEVC.*
 
-Fora desta entrega: AV1 SVC, OpenH264 por software (sem encoder de hardware não dá para compartilhar), várias telas assistidas ao mesmo tempo. Simulcast da tela e compartilhar uma janela só entraram depois da Fase 6 (`SPEC-04` §2.1). O FFmpeg mínimo para distribuir entrou depois da Fase 6: `scripts/ffmpeg-min.sh` compila só `avcodec` + `avutil` com os decoders H.264/HEVC/AV1 e os hwaccels D3D11VA, sem bibliotecas externas, e a CI monta o zip (`lerrichat.exe` + `ffmpeg` + LEIA-ME) e, numa tag `v*`, a Release.
+Simulcast da tela, compartilhar uma janela só, AV1 SVC temporal, H.264 por software (o do Windows, no lugar do OpenH264) e até 4 vídeos assistidos ao mesmo tempo entraram depois da Fase 6 (`SPEC-04` §2, §4 e §5). O FFmpeg mínimo para distribuir entrou depois da Fase 6: `scripts/ffmpeg-min.sh` compila só `avcodec` + `avutil` com os decoders H.264/HEVC/AV1 e os hwaccels D3D11VA, sem bibliotecas externas, e a CI monta o zip (`lerrichat.exe` + `ffmpeg` + LEIA-ME) e, numa tag `v*`, a Release.
 
 ---
 

@@ -36,6 +36,9 @@ const UPDATE_EVERY: Duration = Duration::from_secs(12 * 3600);
 const PURPOSE: &str = "lerrichat/group/v1";
 /// Com que frequência a lista de quem está falando é atualizada.
 const SPEAKING_EVERY: Duration = Duration::from_millis(250);
+/// Telas e câmeras assistidas ao mesmo tempo (cada uma tem decoder e janela
+/// próprios).
+pub const MAX_WATCHING: usize = 4;
 
 /// O que vai dentro das mensagens de aplicação MLS.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1439,6 +1442,12 @@ impl Media {
             #[cfg(windows)]
             match self.start_gpu(core, out.clone(), source).await {
                 Ok(g) => {
+                    if g.software {
+                        emit(RoomEvent::Notice(format!(
+                            "A placa de vídeo não tem encoder: a {} vai por software, em até 720p30, e pesa mais no processador.",
+                            video.name()
+                        )));
+                    }
                     let d = g.description.clone();
                     (Share { _out: out, gpu: Some(g) }, d)
                 }
@@ -1472,7 +1481,7 @@ impl Media {
         source: PublishSource,
     ) -> anyhow::Result<crate::video::GpuShare> {
         let caps = self.video_caps.as_ref().ok_or_else(|| anyhow::anyhow!("ainda verificando a GPU; tente de novo"))?;
-        let codec = self.negotiated_codec(core).ok_or_else(|| anyhow::anyhow!("esta GPU não tem encoder de vídeo por hardware"))?;
+        let codec = self.negotiated_codec(core).ok_or_else(|| anyhow::anyhow!("nenhum encoder de vídeo: nem na placa, nem o H.264 do Windows"))?;
         let source = match source {
             PublishSource::Screen { monitor } => crate::video::Source::Screen {
                 monitor: monitor.or_else(|| caps.monitors.first().map(|m| m.handle)).ok_or_else(|| anyhow::anyhow!("nenhum monitor"))?,
@@ -1526,10 +1535,15 @@ impl Media {
     }
 
     fn watch(&mut self, core: &mut RoomCore, member: MemberId, video: Video, target: WatchTarget, emit: &impl Fn(RoomEvent)) {
-        // Um de cada tipo por vez: troca o que já mostrava.
-        let same_kind: Vec<MemberId> = self.viewers.keys().filter(|(_, v)| *v == video).map(|(m, _)| *m).collect();
-        for m in same_kind {
-            self.unwatch(core, m, video, emit);
+        // Vários ao mesmo tempo, até MAX_WATCHING; o mesmo de novo troca o destino.
+        if self.viewers.contains_key(&(member, video)) {
+            self.unwatch(core, member, video, emit);
+        } else if self.viewers.len() >= MAX_WATCHING {
+            emit(RoomEvent::Notice(format!("Dá para assistir a até {MAX_WATCHING} vídeos ao mesmo tempo; feche um para abrir outro.")));
+            if let WatchTarget::Window { hwnd, .. } = target {
+                emit(RoomEvent::VideoClosed { window: hwnd });
+            }
+            return;
         }
         let sink: crate::screen::Sink = match target {
             WatchTarget::Frames(sink) => {

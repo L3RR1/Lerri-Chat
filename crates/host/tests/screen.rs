@@ -207,6 +207,14 @@ async fn screen_through_blind_relay() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(a_frames.try_recv().is_err(), "quadro da camada baixa chegou para quem está bem");
 
+    // SVC: o descartável passa pelo relay cego, pendurado no quadro de base
+    // (mesma sequência), e não avança a sequência.
+    screen.send_frame(lerri_core::media::LAYER_HIGH, false, true, Codec::Av1, &payload(31, 900));
+    screen.send(false, Codec::Av1, &payload(32, 900));
+    let got = collect(&mut a_frames, 2).await;
+    let summary: Vec<(u16, bool)> = got.iter().map(|f| (f.seq, f.droppable)).collect();
+    assert!(summary.contains(&(30, true)) && summary.contains(&(31, false)), "{summary:?}");
+
     // A para de assistir: a tela fica sem plateia e A não recebe mais nada.
     a.send(Command::Unwatch { member: o, video: Video::Screen });
     owner.watchers(Video::Screen, 0).await;

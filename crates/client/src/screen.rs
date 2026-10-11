@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lerri_core::MemberId;
-use lerri_core::media::{Codec, MAX_VIDEO_FRAME, Video};
+use lerri_core::media::{Codec, Header, MAX_VIDEO_FRAME, Video};
 use lerri_media::screen::{Frame, Keys, open_frame, seal_frame};
 use lerri_net::iroh::endpoint::Connection;
 use tokio::sync::mpsc;
@@ -70,8 +70,20 @@ impl Outgoing {
 
     /// Como [`Outgoing::send`], na camada `layer` do simulcast.
     pub fn send_layer(&self, layer: u8, keyframe: bool, codec: Codec, data: &[u8]) {
-        let seq = self.seq[usize::from(layer.min(1))].fetch_add(1, Ordering::Relaxed);
-        match seal_frame(&self.keys, self.video, layer, seq, keyframe, codec, data) {
+        self.send_frame(layer, keyframe, false, codec, data);
+    }
+
+    /// Quadro da camada `layer`; `droppable`: da camada temporal de cima do
+    /// SVC, que leva a sequência do último quadro de base sem avançá-la (o
+    /// relay pode cortá-lo sem abrir buraco).
+    pub fn send_frame(&self, layer: u8, keyframe: bool, droppable: bool, codec: Codec, data: &[u8]) {
+        let counter = &self.seq[usize::from(layer.min(1))];
+        let header = if droppable && !keyframe {
+            Header::video_droppable(self.video, layer, counter.load(Ordering::Relaxed).wrapping_sub(1))
+        } else {
+            Header::video(self.video, layer, counter.fetch_add(1, Ordering::Relaxed), keyframe)
+        };
+        match seal_frame(&self.keys, header, codec, data) {
             Ok(wire) => {
                 self.in_flight.fetch_add(1, Ordering::Relaxed);
                 if self.tx.send(wire).is_err() {

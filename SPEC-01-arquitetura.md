@@ -15,7 +15,7 @@ Status: **Draft** · Fase: 0 · Depende de: SPEC-00
 | Captura de tela | **Windows.Graphics.Capture** (WGC) + fallback **DXGI Desktop Duplication** | Captura direto da GPU, sem copiar frame pra CPU. |
 | Captura de câmera | **Media Foundation** (`IMFSourceReader`) | API nativa de câmera do Windows. |
 | Encode de vídeo | **AMF** (AMD), **NVENC** (NVIDIA), **Quick Sync** (Intel) via MFT de hardware do Media Foundation | Codifica na GPU. Codec por hardware: AV1 onde houver, senão HEVC (H.265), senão H.264. |
-| Encode por software (último caso) | **OpenH264** (BSD) | Evita a GPL do x264. |
+| Encode por software (último caso) | **H.264 do Windows** (Media Foundation, `CLSID_MSH264EncoderMFT`) | Vem com o Windows, com a licença das patentes do H.264 paga pela Microsoft; zero byte no binário e nada baixado de terceiros. O OpenH264 (BSD) era o plano: compilado no binário, a licença de patentes da Cisco não vale, e baixar o binário da Cisco quebraria "nenhum domínio de terceiros". |
 | Decode de vídeo | **D3D11VA via FFmpeg** (LGPL, DLLs carregadas em tempo de execução; o alvo é um build mínimo só com parsers + hwaccel de H.264/HEVC/AV1) (D-03) | Decodifica na GPU. Na máquina de referência, o Media Foundation não tem decoder HEVC nem AV1 sem a extensão da Store, mas a GPU decodifica os dois pelo D3D11VA (`spikes/video`). |
 | Áudio — codec | **Opus** via `unsafe-libopus` (libopus 1.3 traduzida para Rust) | Padrão de voz em tempo real, leve e excelente a baixo bitrate. A tradução dispensa compilador C e cmake no build. |
 | Áudio — processamento | **WebRTC Audio Processing** (AEC3 + supressão de ruído + AGC2) via `aec3`, porte em Rust; **RNNoise** (`nnnoiseless`) como supressão forte opcional | Cancelamento de eco é difícil de fazer do zero; o módulo do WebRTC é o padrão de mercado. Os portes em Rust evitam o build C++ (meson) do original. |
@@ -124,14 +124,14 @@ A meta "convidado leigo entra em < 60 s" (`SPEC-00`) esbarra em barreiras do pr�
 | **Antivírus** desconfiando de app que captura tela e abre porta UDP | Assinatura de código + envio do binário pra análise da Microsoft/fornecedores antes de cada release. |
 | **Firewall do Defender** ao escutar porta (criador no x1, relay no Windows) | A UI explica antes de o prompt aparecer. O cliente que só conecta não dispara prompt. |
 | **Handler `lerrichat://`** | Registrado em `HKCU\Software\Classes` na primeira execução — sem admin, sem instalador. Colar o link no app sempre funciona como alternativa. |
-| **Licenças de terceiros** (Slint royalty-free, FFmpeg LGPL, OpenH264 BSD, libopus e RNNoise BSD, porte do WebRTC APM BSD/MIT) | Tela "Sobre" com atribuições (Fase 6). FFmpeg em DLLs carregadas em tempo de execução (LGPL: o usuário pode trocá-las); falta o build mínimo (hoje ~95 MB do build completo). |
+| **Licenças de terceiros** (Slint royalty-free, FFmpeg LGPL, libopus e RNNoise BSD, porte do WebRTC APM BSD/MIT) | Tela "Sobre" com atribuições (Fase 6). FFmpeg em DLLs carregadas em tempo de execução (LGPL: o usuário pode trocá-las); falta o build mínimo (hoje ~95 MB do build completo). |
 
 ## 10. Riscos de arquitetura
 
 | Risco | Mitigação |
 |-------|-----------|
 | ~~Render de vídeo sem cópia na UI~~ — **resolvido no spike** (D-02). | Vídeo em janela-filha com swapchain D3D11. Consequência: a UI não desenha por cima da área de vídeo; sobreposições (nome, anel de "falando") ficam fora dela ou são desenhadas no D3D11. |
-| Diversidade de GPUs quebra o encode | Detecção em runtime + cascata AV1→HEVC→H.264→OpenH264 por software. |
+| Diversidade de GPUs quebra o encode | Detecção em runtime + cascata AV1→HEVC→H.264→H.264 por software do Windows. |
 | Decoder HEVC indisponível no receptor | Codec negociado pelo que **todos os receptores decodificam** (`SPEC-04` §2). |
 | NAT/CGNAT impede conexão direta | IPv6 + PCP/UPnP + x1 assistido por relay + modo servidor (`SPEC-03` §4). |
 | Dependência do iroh (projeto de terceiros, fork próprio do quinn) | Versão fixada; configuração sem serviços da n0 coberta por teste; o crate `net` isola a API do iroh do resto do app. |

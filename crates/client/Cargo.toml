@@ -7,10 +7,10 @@ publish.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-lerri-core = { version = "0.0.3", path = "../core" }
-lerri-crypto = { version = "0.0.3", path = "../crypto" }
-lerri-media = { version = "0.0.3", path = "../media" }
-lerri-net = { version = "0.0.3", path = "../net" }
+lerri-core = { version = "0.0.4", path = "../core" }
+lerri-crypto = { version = "0.0.4", path = "../crypto" }
+lerri-media = { version = "0.0.4", path = "../media" }
+lerri-net = { version = "0.0.4", path = "../net" }
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }

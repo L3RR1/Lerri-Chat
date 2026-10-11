@@ -11,7 +11,7 @@ ed25519-dalek = "3.0.0"
 getrandom = "0.4.3"
 hkdf = "0.13.0"
 hmac = "0.13.0"
-lerri-core = { version = "0.0.3", path = "../core" }
+lerri-core = { version = "0.0.4", path = "../core" }
 openmls = "0.9.1"
 openmls_basic_credential = "0.6.0"
 openmls_memory_storage = "0.6.0"

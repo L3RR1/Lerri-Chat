@@ -37,7 +37,11 @@ Medido (`cargo test --release -p lerri-media -- --ignored cpu_cost`, Ryzen 5 560
 
 Orçamento de latência boca-a-ouvido (estimado, ainda não medido com áudio real entre dois PCs): buffer de captura do WASAPI (~10 ms) + quadro Opus (20 ms) + rede (RTT/2) + relay + buffer de jitter (20–40 ms em rede boa) + buffer de saída (~10–20 ms) ≈ **60–90 ms + rede**.
 
-Fica para depois: **push-to-talk** (precisa de atalho global no Windows), escolha de dispositivo (hoje usa o padrão) e trocar o dispositivo padrão sem sair e entrar de novo na voz.
+Entrou depois da Fase 6:
+- **Push-to-talk:** tecla global lida pelo `GetAsyncKeyState` na própria thread de áudio a cada 10 ms (sem hook, sem admin; vale com o jogo em foco). Qualquer tecla ou botão do mouse, gravada na hora. Com a tecla apertada transmite mesmo sem o VAD detectar fala e segura 150 ms ao soltar.
+- **Escolha de microfone e saída** pelo nome, com "Padrão do Windows" como opção. Trocar na voz reabre só o áudio. Um escolhido que sumiu cai no padrão.
+
+Ainda falta: seguir sozinho a troca do dispositivo padrão do Windows sem sair e entrar de novo na voz.
 
 ## 2. Compartilhamento de tela — o pilar do desempenho
 
@@ -112,7 +116,13 @@ A C920 de referência entrega 15 fps num quarto escuro (a exposição automátic
 - Decode por hardware (**D3D11VA**) → processador de vídeo do D3D11 (NV12→RGB + escala) → backbuffer da swapchain da janela-filha de vídeo, **sem passar pela CPU** (D-02, validado em `spikes/video`). A UI do Slint não desenha por cima dessa área.
 - O decoder HEVC do Media Foundation pode depender da extensão "HEVC Video Extensions" da Store. Por isso o decode usa D3D11VA direto (build mínimo do FFmpeg), com o MFT como alternativa quando disponível.
 - **Só decodifica o que está visível.** Transmissão minimizada ou aba trocada → decoder é liberado. Economia direta de CPU/GPU.
-- Cada destinatário recebe só a camada de simulcast que cabe na banda dele.
+- Cada destinatário recebe só a camada de simulcast que cabe na banda dele. *Implementado depois da Fase 6, para a tela:*
+  - duas camadas, a alta (até 1080p, bitrate adaptativo) e a baixa (360p, 30 fps, 400 kbps);
+  - a baixa só é codificada enquanto o relay diz que alguém precisa dela (`Watchers.low`);
+  - o relay decide por pessoa: quem atrasa na alta cai para a baixa a partir do keyframe dela, e volta depois de 10 s sem atrasar;
+  - cada camada tem a sua sequência, e o receptor troca de camada num keyframe, com decoder novo;
+  - a câmera não tem simulcast (já é leve, e cai antes da tela).
+- Compartilhar **uma janela só**: o mesmo caminho do WGC (`CreateForWindow`). Fechar a janela encerra o compartilhamento com aviso; redimensionar encaixa a imagem no tamanho inicial, com barras.
 
 ## 5. Simulcast (resumo; rede em SPEC-03)
 

@@ -37,10 +37,10 @@ O Discord é pesado, exige conta, guarda tudo e lê o que quiser. O Lerri Chat �
 | | |
 |---|---|
 | 💬 **Chat em grupo** | Cifrado com MLS (o protocolo de grupo da IETF). Quem é removido não lê mais nada daí em diante. Histórico local opcional. |
-| 🎙️ **Voz** | Opus, cancelamento de eco (AEC3), supressão de ruído (com modo forte via RNNoise), ganho automático, só transmite quando você fala. Anel roxo em quem está falando. |
-| 🖥️ **Tela** | Captura e codificação na GPU (HEVC, H.264 ou AV1 conforme a placa), codec negociado pelo que todos conseguem decodificar, bitrate adaptativo. 1080p60 gastando 0,1% da CPU. |
+| 🎙️ **Voz** | Opus, cancelamento de eco (AEC3), supressão de ruído (com modo forte via RNNoise), ganho automático. Transmite quando você fala ou só segurando uma tecla (push-to-talk global, vale com o jogo em foco, qualquer tecla ou botão do mouse). Escolha de microfone e saída. Ondas roxas saindo de quem está falando. |
+| 🖥️ **Tela** | A tela inteira ou uma janela só. Captura e codificação na GPU (HEVC, H.264 ou AV1 conforme a placa), codec negociado pelo que todos conseguem decodificar, bitrate adaptativo e simulcast: quem está com a rede ruim recebe uma versão 360p em vez de travar. 1080p60 gastando 0,1% da CPU. |
 | 📷 **Câmera** | 720p pelo mesmo caminho da tela. Dá para compartilhar tela e câmera juntas, e assistir às duas. |
-| 🛡️ **Gestão** | O dono convida e remove; remover troca a chave do grupo na hora. Aviso de quem entrou, com o início da chave pública. |
+| 🛡️ **Gestão** | O dono convida e remove; remover troca a chave do grupo na hora. Aviso de quem entrou, com o início da chave pública. Latência até cada pessoa ao lado do nome. |
 
 ## Dois jeitos de hospedar
 
@@ -55,7 +55,7 @@ Medidos num Ryzen 5 5600 + RX 6700 XT, build release, processo real:
 
 | | |
 |---|---|
-| Tamanho do `.exe` | **23,1 MiB** (meta: < 25) |
+| Tamanho do `.exe` | **23,4 MiB** (meta: < 25) |
 | Janela aberta | **42–91 ms** (meta: < 1,5 s) |
 | RAM parado | **22 MB** na tela inicial, **37 MB** hospedando uma sala (meta: < 80) |
 | Voz, os dois lados falando | **0,26%** da CPU, 24 MB |
@@ -74,7 +74,7 @@ Abra o `lerrichat.exe`:
 - **Criar sala x1:** cria a sala neste PC e mostra o convite (link + QR).
 - **Criar sala num servidor:** cole o link de administração que o `lerrichat-host` mostra.
 
-Na sala, a barra de baixo controla voz, tela e câmera. Quem compartilha ganha um botão **Assistir** (ou **Câmera**) na lista de membros.
+Na sala, a barra de baixo controla voz, tela e câmera. O botão de ajustes ao lado da voz abre **Voz e áudio** (microfone, saída, push-to-talk e supressão forte); a setinha ao lado de **Compartilhar tela** escolhe a tela ou uma janela. Quem compartilha ganha um botão **Assistir** (ou **Câmera**) na lista de membros.
 
 <p align="center">
   <img src="docs/inicio.png" width="410" alt="Tela inicial">
@@ -138,7 +138,7 @@ O projeto é guiado por especificação: primeiro a spec, depois o código.
 
 ## Estado
 
-Fases 0 a 6 implementadas: fundação, salas e convites, chat E2EE, voz, tela, câmera e interface. Testado na mesma máquina e na mesma rede; falta o teste entre dois PCs em redes diferentes e no servidor. Próximos passos: simulcast, push-to-talk, escolha de dispositivo de áudio. Detalhes e pendências em [`SPEC-06`](SPEC-06-fases.md).
+Fases 0 a 6 implementadas: fundação, salas e convites, chat E2EE, voz, tela, câmera e interface. Testado na mesma máquina e na mesma rede; falta o teste entre dois PCs em redes diferentes e no servidor. Depois da Fase 6 entraram push-to-talk, escolha de microfone e saída, compartilhar uma janela, simulcast da tela, latência por membro e o anel de "falando" em onda. Detalhes e pendências em [`SPEC-06`](SPEC-06-fases.md).
 
 ## Escopo de uso
 

@@ -101,7 +101,7 @@ Como ficou: o app abre **uma sala por vez**, então no lugar da barra lateral de
 - **Pílula (`Chip`):** estado curto com ponto ou ícone, mais texto.
 - **Faixa (`Banner`):** aviso dentro da tela, com ícone, texto e as ações (ex.: "Cancelar" e "Sair de vez").
 - **Campo de código de convite:** mono, fundo `surface-raised`, com botão "copiar" e QR ao lado (o QR fica preto no branco, como os leitores esperam).
-- **Tile de participante:** avatar/inicial, nick, anel `violet-glow` quando está falando.
+- **Tile de participante:** avatar/inicial, nick, latência até a pessoa (com a cor do indicador de rede) e, quando ela fala, ondas roxas saindo do avatar e uma forma de onda no lugar do ícone de microfone.
 - **Indicador de rede:** ponto `success`/`warning`/`danger` + caminho + latência em ms (pra ferramenta que preza desempenho, mostrar o número é identidade). Bom: direto e < 120 ms; atenção: ≥ 120 ms ou pelo ponto de encontro; ruim: ≥ 300 ms (aí a voz passa dos 150 ms boca-a-ouvido).
 - **Confirmações:** em linha, no lugar onde a ação aconteceu (remover membro, sair da sala), nunca em modal.
 
@@ -109,7 +109,7 @@ Como ficou: o app abre **uma sala por vez**, então no lugar da barra lateral de
 
 - **Movimento:** transições de 120–180 ms em fundo e borda (hover, foco, aba). O único laço é a barra da tela de espera, que dura poucos segundos.
 
-- **Falando agora:** anel pulsante sutil em `violet-glow` no tile (única animação "viva" permitida). Ela força redesenho enquanto alguém fala, então: redesenha **só o tile**, no máximo a 30 fps, e para assim que o VAD indica silêncio. Com "reduzir animações" do Windows ativo, vira anel estático.
+- **Falando agora:** duas ondas roxas (`violet-bright`) saem do avatar, crescem e somem em sequência, e cinco barras ao lado do nome sobem e descem em senoides defasadas (única animação "viva"). Um relógio só, de 30 fps, na sala, ligado só enquanto alguém fala: custa 0,5% de um núcleo (seguindo a taxa do monitor, 165 Hz, eram 45%). Com os efeitos de animação do Windows desligados, vira anel e barras parados.
 - **Alguém entrou na sala:** aviso discreto no chat com o apelido e o início do `MemberId` (exigência de segurança, `SPEC-02` §7).
 - **Compartilhando tela:** badge `violet` no tile + ícone de tela.
 - **Degradação de rede:** o número de latência muda de cor; sem modal intrusivo.
@@ -148,6 +148,6 @@ Contraste mínimo **WCAG AA** (4,5:1 para texto normal). Pares usados nas telas,
 - [x] Telas principais usando só tokens desta paleta. *Exceções: o QR (preto no branco) e a barra de rolagem do `ScrollView` padrão.*
 - [x] Hex de roxo casados com o `Color.kt` do LerriNFC (P-01), com a tabela de contraste refeita.
 - [x] Todos os pares texto/fundo usados nas telas passam AA. *Conferido por teste.*
-- [x] Nenhuma animação contínua na sala (orçamento de desempenho). *O anel de "falando" é estático; o único laço é a barra da tela de espera.*
+- [x] Nenhuma animação contínua na sala além das ondas de quem está falando (orçamento de desempenho). *30 fps, só enquanto alguém fala, 0,5% de um núcleo.*
 - [x] Cada tela tem uma tarefa principal clara, estado vazio que ensina e confirmações em linha.
 - [x] Navegável por teclado, com foco visível.

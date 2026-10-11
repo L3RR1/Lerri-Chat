@@ -33,7 +33,7 @@ Fora de escopo: UI real, convites, chat.
 Aceite:
 - [x] `lerrichat.exe` e `lerrichat.exe --host` sobem e trocam uma mensagem por QUIC (IPv4 e IPv6; certificado do relay fixado por fingerprint). *`lerrichat-host` no Linux: compila na CI, ainda não rodado num servidor real.*
 - [x] Identidade persiste cifrada (DPAPI) entre reinícios.
-- [x] Binário < 25 MB (RNF-02), partida < 1,5 s (RNF-09). *Medido sem UI: 2,7 MB e ~30 ms. Remedido na Fase 6, com UI, voz, tela e câmera: 23,1 MiB (com o ícone) e janela criada em 42–91 ms.*
+- [x] Binário < 25 MB (RNF-02), partida < 1,5 s (RNF-09). *Medido sem UI: 2,7 MB e ~30 ms. Remedido na Fase 6, com UI, voz, tela e câmera: 23,1 MiB (com o ícone) e janela criada em 42–91 ms. Com push-to-talk, dispositivos, janela, simulcast e latência: 23,4 MiB.*
 - [x] Spike de vídeo: 1080p60 decodificado e exibido com CPU < 5% → D-02 e D-03 registradas. *HEVC 1080p60: 60 fps, 0,14% da máquina, 58 MB de RAM.*
 - [x] Spike de rede: resultado registrado em D-01. *Conecta só pelo relay próprio e migra para direto em ~150 ms; NAT real fica para a Fase 1.*
 
@@ -106,7 +106,7 @@ Aceite:
 - [x] SFU repassa voz sem decifrar. *O relay lê só o cabeçalho de roteamento e não tem chave. Testado: quem não está na voz não recebe, e a troca de epoch na remoção não interrompe quem fica.*
 - [ ] Sem eco perceptível com caixa de som (sem fone). *AEC3 ligado; num eco sintético cai mais de 15 dB. Falta ouvir entre dois PCs com caixa de som.*
 
-Limitações conhecidas: sem push-to-talk e sem escolha de dispositivo (usa o padrão do Windows); o binário chegou a 24,85 MiB, perto do limite de 25 (`SPEC-01` §10); na Fase 6 está em 22,8 MiB.
+Limitações conhecidas: o binário chegou a 24,85 MiB, perto do limite de 25 (`SPEC-01` §10); na Fase 6 está em 22,8 MiB. Push-to-talk e escolha de microfone e saída entraram depois da Fase 6 (`SPEC-04` §1.1).
 
 ---
 
@@ -130,7 +130,7 @@ Aceite:
 - [x] Encoder certo escolhido automaticamente por GPU. *Enumera os MFTs de hardware do Media Foundation. Na RX 6700 XT escolhe AMDh265Encoder / AMDh264Encoder. Só testado em AMD.*
 - [ ] Receptor sem decode HEVC entra na sala e o transmissor desce de codec sozinho. *Implementado: cada membro anuncia o que decodifica pelo MLS, o transmissor renegocia a cada 250 ms e recria o encoder com keyframe. A negociação e os dois encoders (HEVC e H.264) estão testados; falta um receptor real sem HEVC.*
 
-Fora desta entrega: simulcast e AV1 SVC (por enquanto o relay pula quadros para quem está atrasado e retoma no keyframe), OpenH264 por software (sem encoder de hardware não dá para compartilhar), compartilhar uma janela só (hoje é o monitor inteiro), várias telas assistidas ao mesmo tempo. O FFmpeg mínimo para distribuir entrou depois da Fase 6: `scripts/ffmpeg-min.sh` compila só `avcodec` + `avutil` com os decoders H.264/HEVC/AV1 e os hwaccels D3D11VA, sem bibliotecas externas, e a CI monta o zip (`lerrichat.exe` + `ffmpeg` + LEIA-ME) e, numa tag `v*`, a Release.
+Fora desta entrega: AV1 SVC, OpenH264 por software (sem encoder de hardware não dá para compartilhar), várias telas assistidas ao mesmo tempo. Simulcast da tela e compartilhar uma janela só entraram depois da Fase 6 (`SPEC-04` §2.1). O FFmpeg mínimo para distribuir entrou depois da Fase 6: `scripts/ffmpeg-min.sh` compila só `avcodec` + `avutil` com os decoders H.264/HEVC/AV1 e os hwaccels D3D11VA, sem bibliotecas externas, e a CI monta o zip (`lerrichat.exe` + `ffmpeg` + LEIA-ME) e, numa tag `v*`, a Release.
 
 ---
 
@@ -146,7 +146,7 @@ Estado: **implementada sem simulcast; falta o teste entre dois PCs.** Câmera na
 
 Aceite:
 - [x] Câmera + tela ao mesmo tempo sem estourar as metas de CPU. *Processos reais, mesma máquina: quem publica tela (1080×1920 a 58 fps) e câmera (720p) gasta 0,17% da máquina (2% de um núcleo), 100 MB; quem assiste aos dois, 0,05% e 82 MB. Na primeira de três rodadas os dois streams pararam por ~5 s logo no início e voltaram sozinhos; não se repetiu.*
-- [ ] Degradação graciosa por simulcast em rede ruim. *Sem simulcast ainda. No lugar, o relay pula quadros de quem está atrasado até o próximo keyframe, e a câmera desiste antes da tela (4 quadros em trânsito contra 8). Falta testar com rede ruim de verdade.*
+- [ ] Degradação graciosa por simulcast em rede ruim. *Simulcast da tela implementado depois da Fase 6 (360p para quem atrasa, volta à alta depois de 10 s estável); a troca de camada está testada no relay e as duas camadas na GPU. A câmera continua pulando quadros até o próximo keyframe e desiste antes da tela. Falta testar com rede ruim de verdade.*
 
 O limite de sessões de encoder (NVENC de consumo) não chega a pesar: cada pessoa usa no máximo duas, tela e câmera.
 
@@ -177,7 +177,7 @@ Aceite:
 - [ ] Convidado leigo entra em < 60 s a partir do download, num Windows limpo. *Falta testar com uma pessoa. Sem assinatura de código, o SmartScreen ainda vai pedir "Mais informações → Executar assim mesmo".*
 - [x] Telas só com tokens da paleta; todos os pares texto/fundo passam AA. *`crates/ui/tests/contrast.rs` lê o `global Theme` e confere cada par usado. Exceções: o QR (preto no branco) e a barra de rolagem padrão.*
 
-Fora desta entrega: assinatura de código (D-05), anel de "falando" pulsante (é estático), indicador de latência por membro (só o caminho até o host) e push-to-talk.
+Fora desta entrega: assinatura de código (D-05). Anel de "falando" em onda, latência por membro e push-to-talk entraram depois.
 
 ---
 

@@ -27,7 +27,8 @@ pub type Watching = Arc<Mutex<HashMap<(MemberId, Video), Sink>>>;
 pub struct Outgoing {
     keys: Keys,
     video: Video,
-    seq: AtomicU16,
+    /// Uma sequência por camada do simulcast (o receptor reordena cada uma).
+    seq: [AtomicU16; 2],
     tx: mpsc::UnboundedSender<Vec<u8>>,
     in_flight: Arc<AtomicUsize>,
     task: JoinHandle<()>,
@@ -58,14 +59,19 @@ impl Outgoing {
                 });
             }
         });
-        Arc::new(Self { keys, video, seq: AtomicU16::new(0), tx, in_flight, task })
+        Arc::new(Self { keys, video, seq: [AtomicU16::new(0), AtomicU16::new(0)], tx, in_flight, task })
     }
 
-    /// Cifra e manda um quadro codificado. Pode ser chamado de qualquer
-    /// thread (o encoder entrega na dele).
+    /// Cifra e manda um quadro codificado da camada alta. Pode ser chamado de
+    /// qualquer thread (o encoder entrega na dele).
     pub fn send(&self, keyframe: bool, codec: Codec, data: &[u8]) {
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        match seal_frame(&self.keys, self.video, seq, keyframe, codec, data) {
+        self.send_layer(lerri_core::media::LAYER_HIGH, keyframe, codec, data);
+    }
+
+    /// Como [`Outgoing::send`], na camada `layer` do simulcast.
+    pub fn send_layer(&self, layer: u8, keyframe: bool, codec: Codec, data: &[u8]) {
+        let seq = self.seq[usize::from(layer.min(1))].fetch_add(1, Ordering::Relaxed);
+        match seal_frame(&self.keys, self.video, layer, seq, keyframe, codec, data) {
             Ok(wire) => {
                 self.in_flight.fetch_add(1, Ordering::Relaxed);
                 if self.tx.send(wire).is_err() {

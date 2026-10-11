@@ -1042,6 +1042,8 @@ component RoomView inherits VerticalLayout {
     in property <bool> screen-sharing;
     in property <string> screen-info;
     in property <int> screen-watchers;
+    // Quantos recebem a camada baixa do simulcast (rede ruim).
+    in property <int> screen-low-watchers;
     in property <bool> can-share;
     in property <string> watch-problem;
     in property <[string]> monitors;
@@ -1739,7 +1741,8 @@ component RoomView inherits VerticalLayout {
                     Chip {
                         icon: @image-url("icons/screen-share.png");
                         tone: Theme.violet-bright;
-                        text: (root.monitor-index >= root.monitor-count ? "Janela no ar, " : "Tela no ar, ") + (root.screen-watchers == 0 ? "ninguém assistindo" : root.screen-watchers == 1 ? "1 assistindo" : root.screen-watchers + " assistindo");
+                        text: (root.monitor-index >= root.monitor-count ? "Janela no ar, " : "Tela no ar, ") + (root.screen-watchers == 0 ? "ninguém assistindo" : root.screen-watchers == 1 ? "1 assistindo" : root.screen-watchers + " assistindo")
+                            + (root.screen-low-watchers == 0 ? "" : " (" + root.screen-low-watchers + " em qualidade baixa)");
                     }
                 }
                 if root.camera-on: VerticalLayout {
@@ -1921,6 +1924,7 @@ export component AppWindow inherits Window {
     in property <bool> screen-sharing;
     in property <string> screen-info;
     in property <int> screen-watchers;
+    in property <int> screen-low-watchers;
     in property <bool> can-share;
     in property <string> watch-problem;
     in property <[string]> monitors;
@@ -2074,6 +2078,7 @@ export component AppWindow inherits Window {
                 screen-sharing: root.screen-sharing;
                 screen-info: root.screen-info;
                 screen-watchers: root.screen-watchers;
+                screen-low-watchers: root.screen-low-watchers;
                 can-share: root.can-share;
                 watch-problem: root.watch-problem;
                 monitors: root.monitors;

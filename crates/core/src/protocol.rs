@@ -136,8 +136,9 @@ pub enum Frame {
     /// Para quem publica: alguém precisa de um keyframe.
     KeyframeRequested { video: Video },
     /// Para quem publica: quantos estão assistindo (zero: pode pausar o
-    /// encoder).
-    Watchers { video: Video, count: u32 },
+    /// encoder) e quantos deles o relay passou para a camada baixa do
+    /// simulcast (zero: não precisa codificá-la).
+    Watchers { video: Video, count: u32, low: u32 },
     /// Repassado aos membros: alguém quer entrar no grupo.
     JoinRequested { member: MemberId, token_hash: Option<TokenHash>, key_package: Vec<u8>, mac: [u8; 32] },
     /// Commit aceito de outro membro, ou do log quando você volta.

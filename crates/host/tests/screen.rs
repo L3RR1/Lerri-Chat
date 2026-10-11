@@ -195,6 +195,18 @@ async fn screen_through_blind_relay() {
     // Cada um recebeu só o que pediu.
     assert!(a_frames.try_recv().is_err() && b_frames.try_recv().is_err());
 
+    // Simulcast: com a rede boa, A continua na camada alta; a baixa (sequência
+    // própria) não chega para ele.
+    for seq in 0..5u16 {
+        screen.send_layer(lerri_core::media::LAYER_LOW, seq == 0, Codec::Hevc, &payload(500 + seq, 1_000));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    screen.send(false, Codec::Hevc, &payload(30, 2_000));
+    let f = collect(&mut a_frames, 1).await.remove(0);
+    assert_eq!((f.layer, f.seq), (lerri_core::media::LAYER_HIGH, 30), "só a camada alta");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(a_frames.try_recv().is_err(), "quadro da camada baixa chegou para quem está bem");
+
     // A para de assistir: a tela fica sem plateia e A não recebe mais nada.
     a.send(Command::Unwatch { member: o, video: Video::Screen });
     owner.watchers(Video::Screen, 0).await;

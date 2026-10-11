@@ -659,11 +659,13 @@ async fn run_room(
                 let on = view.sharing.is_some();
                 let info = view.sharing.unwrap_or_default();
                 let watchers = view.watchers as i32;
+                let low = view.low_watchers as i32;
                 let _ = w1.upgrade_in_event_loop(move |ui| match video {
                     Video::Screen => {
                         ui.set_screen_sharing(on);
                         ui.set_screen_info(info.into());
                         ui.set_screen_watchers(watchers);
+                        ui.set_screen_low_watchers(low);
                     }
                     Video::Camera => {
                         ui.set_camera_on(on);

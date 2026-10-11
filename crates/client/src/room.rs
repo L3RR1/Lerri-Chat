@@ -156,6 +156,8 @@ pub struct StreamView {
     pub sharing: Option<String>,
     /// Quantos assistem.
     pub watchers: u32,
+    /// Quantos deles recebem a camada baixa do simulcast (rede ruim).
+    pub low_watchers: u32,
 }
 
 #[derive(Clone)]
@@ -1123,7 +1125,7 @@ pub async fn run(
         tokio::select! {
             ev = session.next_event() => match ev {
                 Some(Event::Relay(Frame::KeyframeRequested { video })) => media.keyframe_requested(video, &emit),
-                Some(Event::Relay(Frame::Watchers { video, count })) => media.set_watchers(video, count, &emit),
+                Some(Event::Relay(Frame::Watchers { video, count, low })) => media.set_watchers(video, count, low, &emit),
                 Some(Event::Publish { member, video, on: false }) => {
                     core.on_event(Event::Publish { member, video, on: false }, &data_dir);
                     media.unwatch(&mut core, member, video, &emit);
@@ -1452,7 +1454,7 @@ impl Media {
             (share, "sem GPU (teste)".to_string())
         };
         self.shares.insert(video, share);
-        self.views.insert(video, StreamView { sharing: Some(description), watchers: 0 });
+        self.views.insert(video, StreamView { sharing: Some(description), watchers: 0, low_watchers: 0 });
         core.set_publishing(video, true);
         self.emit_view(video, emit);
     }
@@ -1498,15 +1500,16 @@ impl Media {
         emit(RoomEvent::KeyframeRequested { video });
     }
 
-    fn set_watchers(&mut self, video: Video, count: u32, emit: &impl Fn(RoomEvent)) {
+    fn set_watchers(&mut self, video: Video, count: u32, low: u32, emit: &impl Fn(RoomEvent)) {
         #[cfg(windows)]
         if let Some(g) = self.shares.get(&video).and_then(|s| s.gpu.as_ref()) {
             g.set_watchers(count);
+            g.set_low_layer(low > 0);
         }
         if let Some(view) = self.views.get_mut(&video)
-            && view.watchers != count
+            && (view.watchers, view.low_watchers) != (count, low)
         {
-            view.watchers = count;
+            (view.watchers, view.low_watchers) = (count, low);
             self.emit_view(video, emit);
         }
     }

@@ -18,9 +18,17 @@ use lerri_crypto::sframe::{Keyring, SframeError};
 /// Chaves SFrame da sala, as mesmas da voz: um contador só por remetente.
 pub type Keys = Arc<Mutex<Keyring>>;
 
-/// Monta o conteúdo do stream de um quadro.
-pub fn seal_frame(keys: &Keys, video: Video, seq: u16, keyframe: bool, codec: Codec, data: &[u8]) -> Result<Vec<u8>, SframeError> {
-    let header = Header::video(video, seq, keyframe).encode();
+/// Monta o conteúdo do stream de um quadro da camada `layer`.
+pub fn seal_frame(
+    keys: &Keys,
+    video: Video,
+    layer: u8,
+    seq: u16,
+    keyframe: bool,
+    codec: Codec,
+    data: &[u8],
+) -> Result<Vec<u8>, SframeError> {
+    let header = Header::video(video, layer, seq, keyframe).encode();
     let mut plain = Vec::with_capacity(data.len() + 1);
     plain.push(codec.to_byte());
     plain.extend_from_slice(data);
@@ -34,6 +42,8 @@ pub fn seal_frame(keys: &Keys, video: Video, seq: u16, keyframe: bool, codec: Co
 pub struct Frame {
     pub from: MemberId,
     pub video: Video,
+    /// Camada do simulcast (`LAYER_HIGH` ou `LAYER_LOW`).
+    pub layer: u8,
     pub seq: u16,
     pub keyframe: bool,
     pub codec: Codec,
@@ -47,7 +57,7 @@ pub fn open_frame(keys: &Keys, stream: &[u8]) -> Result<Frame, SframeError> {
     let (from, plain) = keys.lock().unwrap().open(&stream[..HEADER_LEN], body)?;
     let (&codec, data) = plain.split_first().ok_or(SframeError::Malformed)?;
     let codec = Codec::from_byte(codec).ok_or(SframeError::Malformed)?;
-    Ok(Frame { from, video, seq: header.seq, keyframe: header.keyframe, codec, data: data.to_vec() })
+    Ok(Frame { from, video, layer: header.layer, seq: header.seq, keyframe: header.keyframe, codec, data: data.to_vec() })
 }
 
 /// Quanto esperar um quadro que ficou para trás antes de desistir e pedir um
@@ -59,6 +69,10 @@ const MAX_HELD: usize = 30;
 /// um buraco) sempre num keyframe, porque o decoder precisa dele.
 #[derive(Default)]
 pub struct Reorder {
+    /// Camada do simulcast que está chegando. O relay troca de camada sempre
+    /// num keyframe; cada camada tem a sua sequência, então a troca recomeça
+    /// a ordem.
+    layer: u8,
     /// Próximo esperado, com o número de sequência estendido para 64 bits.
     next: Option<u64>,
     held: BTreeMap<u64, Frame>,
@@ -88,6 +102,13 @@ impl Reorder {
     /// Recebe um quadro; devolve os que já podem ir para o decoder, em ordem.
     pub fn push(&mut self, frame: Frame, now: Instant) -> Vec<Frame> {
         let mut out = Vec::new();
+        if frame.layer != self.layer {
+            if !frame.keyframe {
+                // Sobra da camada anterior, ou da nova antes do keyframe.
+                return out;
+            }
+            *self = Self { layer: frame.layer, ..Self::default() };
+        }
         let e = self.extend(frame.seq);
         match self.next {
             // Keyframe zera a dependência: o que esperava antes dele não serve mais.
@@ -141,7 +162,7 @@ impl Reorder {
 
     /// O decoder falhou: recomeça no próximo keyframe.
     pub fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self { layer: self.layer, ..Self::default() };
     }
 }
 
@@ -221,7 +242,11 @@ mod tests {
     use zeroize::Zeroizing;
 
     fn frame(seq: u16, keyframe: bool) -> Frame {
-        Frame { from: MemberId([1; 32]), video: Video::Screen, seq, keyframe, codec: Codec::Hevc, data: vec![seq as u8] }
+        Frame { from: MemberId([1; 32]), video: Video::Screen, layer: 0, seq, keyframe, codec: Codec::Hevc, data: vec![seq as u8] }
+    }
+
+    fn low(seq: u16, keyframe: bool) -> Frame {
+        Frame { layer: 1, ..frame(seq, keyframe) }
     }
 
     fn seqs(v: &[Frame]) -> Vec<u16> {
@@ -241,16 +266,33 @@ mod tests {
             Arc::new(Mutex::new(k))
         };
         let (a, b) = (keys(0), keys(1));
-        let wire = seal_frame(&a, Video::Camera, 7, true, Codec::H264, b"quadro").unwrap();
+        let wire = seal_frame(&a, Video::Camera, 0, 7, true, Codec::H264, b"quadro").unwrap();
         assert!(!wire.windows(6).any(|w| w == b"quadro"));
         let (h, _) = Header::parse(&wire).unwrap();
         assert!(h.keyframe && h.kind == lerri_core::media::Kind::Camera, "o relay lê o cabeçalho");
         let f = open_frame(&b, &wire).unwrap();
-        assert_eq!(f, Frame { from: MemberId([1; 32]), video: Video::Camera, seq: 7, keyframe: true, codec: Codec::H264, data: b"quadro".to_vec() });
+        assert_eq!(f, Frame { from: MemberId([1; 32]), video: Video::Camera, layer: 0, seq: 7, keyframe: true, codec: Codec::H264, data: b"quadro".to_vec() });
         // Cabeçalho adulterado (ex.: relay marcando keyframe) não decifra.
         let mut bad = wire.clone();
         bad[1] ^= 1;
         assert!(open_frame(&b, &bad).is_err());
+    }
+
+    #[test]
+    fn layer_switch_restarts_on_the_new_keyframe() {
+        let t = Instant::now();
+        let mut r = Reorder::default();
+        assert_eq!(seqs(&r.push(frame(100, true), t)), [100]);
+        assert_eq!(seqs(&r.push(frame(101, false), t)), [101]);
+        // A camada baixa tem a sua sequência: antes do keyframe dela, nada passa.
+        assert!(r.push(low(3, false), t).is_empty());
+        assert_eq!(seqs(&r.push(low(4, true), t)), [4], "keyframe com seq menor ainda vale");
+        assert_eq!(seqs(&r.push(low(5, false), t)), [5]);
+        // Sobra atrasada da camada alta é descartada sem pedir keyframe.
+        assert!(r.push(frame(102, false), t).is_empty());
+        assert_eq!(r.poll(t + Duration::from_secs(1)), Gap::None);
+        // E volta para a alta no keyframe dela.
+        assert_eq!(seqs(&r.push(frame(140, true), t)), [140]);
     }
 
     #[test]

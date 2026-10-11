@@ -47,6 +47,9 @@ const KEYFRAME_EVERY: Duration = Duration::from_millis(500);
 const VIDEO_DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// De quanto em quanto tempo o relay conta a latência de cada um à sala.
 const LATENCY_EVERY: Duration = Duration::from_secs(3);
+/// Quem caiu para a camada baixa da tela volta para a alta depois de este
+/// tempo sem atrasar.
+const UPGRADE_AFTER: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Room {
@@ -106,9 +109,9 @@ struct Peer {
     publishing: BTreeSet<Video>,
     /// De quem recebe a tela.
     watching: BTreeSet<(MemberId, Video)>,
-    /// Telas que este membro só volta a receber a partir de um keyframe
-    /// (começou a assistir ou o relay pulou quadros por congestionamento).
-    resume: HashMap<(MemberId, Video), Resume>,
+    /// Estado de cada stream que este membro assiste: camada do simulcast e
+    /// se só volta a receber a partir de um keyframe.
+    views: HashMap<(MemberId, Video), View>,
     /// Quadros de vídeo em trânsito para este membro (ainda sem confirmação).
     in_flight: Arc<AtomicUsize>,
     /// Último pedido de keyframe repassado a este membro (como transmissor).
@@ -128,6 +131,85 @@ fn seq_before(a: u16, b: u16) -> bool {
     (a.wrapping_sub(b) as i16) < 0
 }
 
+/// Um stream visto por um membro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct View {
+    /// `Some`: só volta a receber a partir de um keyframe (começou a assistir,
+    /// trocou de camada ou o relay pulou quadros por congestionamento).
+    resume: Option<Resume>,
+    /// Camada do simulcast que este membro recebe.
+    layer: u8,
+    /// Na camada baixa: desde quando não atrasa.
+    calm_since: Option<Instant>,
+}
+
+impl View {
+    fn new() -> Self {
+        Self { resume: Some(Resume::WaitingKey), layer: media::LAYER_HIGH, calm_since: None }
+    }
+
+    /// O cabeçalho de um quadro acabou de chegar: se é o keyframe que este
+    /// membro esperava, ele já pode receber os quadros seguintes.
+    fn key_arriving(&mut self, header: &media::Header) {
+        if header.keyframe && header.layer == self.layer && self.resume == Some(Resume::WaitingKey) {
+            self.resume = Some(Resume::From(header.seq));
+        }
+    }
+}
+
+/// O que fazer com um quadro para quem assiste.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Route {
+    send: bool,
+    /// Ficou para trás: peça um keyframe a quem publica.
+    congested: bool,
+    /// Mudou de camada: conte a quem publica e peça um keyframe já.
+    switched: bool,
+}
+
+/// Decide um quadro para um membro. Atrasado na camada alta da tela, cai
+/// para a baixa; na baixa e sem atrasar por [`UPGRADE_AFTER`], volta. Sem
+/// simulcast (câmera), só pula quadros até o próximo keyframe.
+fn route(v: &mut View, header: &media::Header, simulcast: bool, in_flight: usize, limit: usize, now: Instant) -> Route {
+    if header.layer != v.layer {
+        return Route::default();
+    }
+    let waiting = v.resume == Some(Resume::WaitingKey);
+    let send = match (header.keyframe, v.resume) {
+        // Keyframe recomeça a imagem; só desiste se o atraso já é enorme.
+        (true, _) => in_flight < 2 * limit,
+        (false, Some(Resume::WaitingKey)) => false,
+        (false, Some(Resume::From(k))) => !seq_before(header.seq, k) && in_flight < limit,
+        (false, None) => in_flight < limit,
+    };
+    if send {
+        if header.keyframe {
+            v.resume = None;
+        }
+        if v.layer == media::LAYER_LOW && in_flight <= 1 && v.calm_since.is_some_and(|t| now.duration_since(t) >= UPGRADE_AFTER) {
+            *v = View::new();
+            return Route { send: true, congested: false, switched: true };
+        }
+        return Route { send: true, ..Route::default() };
+    }
+    if matches!(v.resume, Some(Resume::From(k)) if seq_before(header.seq, k)) {
+        // Quadro anterior ao keyframe que já está chegando.
+        return Route::default();
+    }
+    if waiting {
+        return Route { congested: true, ..Route::default() };
+    }
+    // Atrasado de verdade.
+    v.resume = Some(Resume::WaitingKey);
+    if v.layer == media::LAYER_LOW {
+        v.calm_since = Some(now);
+    } else if simulcast {
+        *v = View { resume: Some(Resume::WaitingKey), layer: media::LAYER_LOW, calm_since: Some(now) };
+        return Route { send: false, congested: true, switched: true };
+    }
+    Route { congested: true, ..Route::default() }
+}
+
 impl Peer {
     fn new(conn_id: u64, conn: Connection, tx: mpsc::UnboundedSender<Frame>) -> Self {
         Self {
@@ -137,7 +219,7 @@ impl Peer {
             voice: false,
             publishing: BTreeSet::new(),
             watching: BTreeSet::new(),
-            resume: HashMap::new(),
+            views: HashMap::new(),
             in_flight: Arc::default(),
             last_key_request: HashMap::new(),
         }
@@ -165,11 +247,14 @@ impl State {
         self.online.get(&room).and_then(|p| p.get(&member)).is_some_and(|p| p.tx.send(frame).is_ok())
     }
 
-    /// Conta para quem compartilha quantos assistem à tela dele.
+    /// Conta para quem compartilha quantos assistem à tela dele, e quantos
+    /// estão na camada baixa.
     fn send_watchers(&self, room: RoomId, sharer: MemberId, video: Video) {
         let Some(peers) = self.online.get(&room) else { return };
-        let count = peers.iter().filter(|(m, p)| **m != sharer && p.watching.contains(&(sharer, video))).count();
-        self.send_to(room, sharer, Frame::Watchers { video, count: count as u32 });
+        let key = (sharer, video);
+        let viewers: Vec<&Peer> = peers.iter().filter(|(m, p)| **m != sharer && p.watching.contains(&key)).map(|(_, p)| p).collect();
+        let low = viewers.iter().filter(|p| p.views.get(&key).is_some_and(|v| v.layer == media::LAYER_LOW)).count();
+        self.send_to(room, sharer, Frame::Watchers { video, count: viewers.len() as u32, low: low as u32 });
     }
 
     /// Repassa um pedido de keyframe a quem compartilha, no máximo um a cada
@@ -501,11 +586,11 @@ impl RoomService {
                 if let Some(p) = st.online.get_mut(&room).and_then(|p| p.get_mut(&me)) {
                     if on {
                         p.watching.insert((member, video));
-                        // Só faz sentido começar de um quadro completo.
-                        p.resume.insert((member, video), Resume::WaitingKey);
+                        // Só faz sentido começar de um quadro completo, na camada alta.
+                        p.views.insert((member, video), View::new());
                     } else {
                         p.watching.remove(&(member, video));
-                        p.resume.remove(&(member, video));
+                        p.views.remove(&(member, video));
                     }
                 }
                 st.send_watchers(room, member, video);
@@ -600,8 +685,8 @@ impl RoomService {
             // Quem não está publicando nem chega a ter o corpo lido.
             anyhow::ensure!(peers.get(&me).is_some_and(|p| p.publishing.contains(&video)), "quadro de vídeo não publicado");
             for p in peers.values_mut().filter(|_| header.keyframe) {
-                if let Some(r @ Resume::WaitingKey) = p.resume.get_mut(&key) {
-                    *r = Resume::From(header.seq);
+                if let Some(v) = p.views.get_mut(&key) {
+                    v.key_arriving(&header);
                 }
             }
         }
@@ -618,34 +703,31 @@ impl RoomService {
             if !peers.get(&me).is_some_and(|p| p.publishing.contains(&video)) {
                 return Ok(());
             }
-            let mut congested = false;
+            let (mut congested, mut switched) = (false, false);
+            let now = Instant::now();
             for (m, p) in peers.iter_mut() {
                 if *m == me || !p.watching.contains(&key) {
                     continue;
                 }
                 let in_flight = p.in_flight.load(Ordering::Relaxed);
-                let send = match (header.keyframe, p.resume.get(&key)) {
-                    // Keyframe recomeça a imagem; só desiste se o atraso já é enorme.
-                    (true, _) => in_flight < 2 * limit,
-                    (false, Some(Resume::WaitingKey)) => false,
-                    (false, Some(Resume::From(k))) => !seq_before(header.seq, *k) && in_flight < limit,
-                    (false, None) => in_flight < limit,
-                };
-                if send {
-                    if header.keyframe {
-                        p.resume.remove(&key);
-                    }
+                let view = p.views.entry(key).or_insert_with(View::new);
+                let r = route(view, &header, video == Video::Screen, in_flight, limit, now);
+                if r.send {
                     p.in_flight.fetch_add(1, Ordering::Relaxed);
                     targets.push((p.conn.clone(), p.in_flight.clone()));
-                } else if !matches!(p.resume.get(&key), Some(Resume::From(k)) if seq_before(header.seq, *k)) {
-                    // Atrasado (não só um quadro anterior ao keyframe que já vem):
-                    // espera o próximo keyframe.
-                    debug!(to = %m.short(), video = video.name(), seq = header.seq, in_flight, "quadro de vídeo pulado");
-                    p.resume.insert(key, Resume::WaitingKey);
-                    congested = true;
                 }
+                if r.switched {
+                    info!(to = %m.short(), video = video.name(), layer = view.layer, in_flight, "camada do simulcast trocada");
+                } else if r.congested {
+                    debug!(to = %m.short(), video = video.name(), seq = header.seq, in_flight, "quadro de vídeo pulado");
+                }
+                congested |= r.congested;
+                switched |= r.switched;
             }
-            if congested {
+            if switched {
+                st.send_watchers(room, me, video);
+                st.request_keyframe(room, me, video, true);
+            } else if congested {
                 st.request_keyframe(room, me, video, false);
             }
         }
@@ -776,4 +858,76 @@ fn save_rooms(path: &Path, rooms: &HashMap<RoomId, Room>) -> anyhow::Result<()> 
     std::fs::write(&tmp, postcard::to_allocvec(rooms)?)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lerri_core::media::{Header, LAYER_HIGH, LAYER_LOW};
+
+    fn h(layer: u8, seq: u16, keyframe: bool) -> Header {
+        Header::video(Video::Screen, layer, seq, keyframe)
+    }
+
+    /// Keyframe chegando e depois a decisão, como o relay faz.
+    fn deliver(v: &mut View, header: Header, in_flight: usize, now: Instant) -> Route {
+        v.key_arriving(&header);
+        route(v, &header, true, in_flight, MAX_IN_FLIGHT, now)
+    }
+
+    #[test]
+    fn slow_viewer_drops_to_low_layer_and_comes_back() {
+        let t = Instant::now();
+        let mut v = View::new();
+        // Começa na alta, a partir de um keyframe; a baixa não chega.
+        assert!(!deliver(&mut v, h(LAYER_HIGH, 9, false), 0, t).send);
+        assert!(deliver(&mut v, h(LAYER_HIGH, 10, true), 0, t).send);
+        assert!(deliver(&mut v, h(LAYER_HIGH, 11, false), 0, t).send);
+        assert!(!deliver(&mut v, h(LAYER_LOW, 50, true), 0, t).send, "baixa não vai para quem está bem");
+
+        // Atrasou: cai para a baixa e pede keyframe.
+        let r = deliver(&mut v, h(LAYER_HIGH, 12, false), MAX_IN_FLIGHT, t);
+        assert_eq!(r, Route { send: false, congested: true, switched: true });
+        assert_eq!(v.layer, LAYER_LOW);
+        assert!(!deliver(&mut v, h(LAYER_HIGH, 13, true), 0, t).send, "alta não vai mais");
+        assert!(!deliver(&mut v, h(LAYER_LOW, 51, false), 0, t).send, "baixa só a partir do keyframe dela");
+        assert!(deliver(&mut v, h(LAYER_LOW, 52, true), 0, t).send);
+        assert!(deliver(&mut v, h(LAYER_LOW, 53, false), 0, t).send);
+
+        // Atrasar de novo na baixa zera o relógio da volta.
+        let t2 = t + Duration::from_secs(8);
+        assert_eq!(deliver(&mut v, h(LAYER_LOW, 54, false), MAX_IN_FLIGHT, t2), Route { send: false, congested: true, switched: false });
+        assert!(deliver(&mut v, h(LAYER_LOW, 56, true), 0, t2).send);
+        let r = deliver(&mut v, h(LAYER_LOW, 57, false), 0, t + Duration::from_secs(12));
+        assert_eq!(r, Route { send: true, congested: false, switched: false }, "só 4 s calmo");
+
+        // 10 s sem atrasar: volta para a alta, no keyframe dela.
+        let t3 = t2 + UPGRADE_AFTER;
+        assert_eq!(deliver(&mut v, h(LAYER_LOW, 58, false), 1, t3), Route { send: true, congested: false, switched: true });
+        assert_eq!(v.layer, LAYER_HIGH);
+        assert!(!deliver(&mut v, h(LAYER_LOW, 59, false), 0, t3).send);
+        assert!(!deliver(&mut v, h(LAYER_HIGH, 40, false), 0, t3).send);
+        assert!(deliver(&mut v, h(LAYER_HIGH, 41, true), 0, t3).send);
+    }
+
+    #[test]
+    fn waiting_for_first_keyframe_is_not_congestion() {
+        let t = Instant::now();
+        let mut v = View::new();
+        let r = deliver(&mut v, h(LAYER_HIGH, 3, false), 0, t);
+        assert_eq!(r, Route { send: false, congested: true, switched: false }, "pede keyframe, mas não troca de camada");
+        assert_eq!(v.layer, LAYER_HIGH);
+    }
+
+    #[test]
+    fn camera_has_no_simulcast() {
+        let t = Instant::now();
+        let mut v = View::new();
+        let cam = |seq, key| Header::video(Video::Camera, LAYER_HIGH, seq, key);
+        v.key_arriving(&cam(1, true));
+        assert!(route(&mut v, &cam(1, true), false, 0, MAX_IN_FLIGHT_CAMERA, t).send);
+        let r = route(&mut v, &cam(2, false), false, MAX_IN_FLIGHT_CAMERA, MAX_IN_FLIGHT_CAMERA, t);
+        assert_eq!(r, Route { send: false, congested: true, switched: false });
+        assert_eq!(v.layer, LAYER_HIGH);
+    }
 }

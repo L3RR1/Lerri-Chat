@@ -66,18 +66,22 @@ pub enum Source {
 
 /// Captura + encoder em uso, tela ou câmera.
 enum Active {
-    Screen(Sender),
-    Camera(CameraSender),
+    Screen(Box<Sender>),
+    Camera(Box<CameraSender>),
 }
 
 impl Active {
-    fn start(source: &Source, codec: Codec, bitrate: u32, on_frame: encode::OnFrame) -> anyhow::Result<Self> {
+    fn start(source: &Source, codec: Codec, bitrate: u32, on_frame: encode::OnFrame, on_low: encode::OnFrame) -> anyhow::Result<Self> {
         let d3d = D3D::new()?;
         Ok(match source {
-            Source::Screen { monitor } => Active::Screen(Sender::start(&d3d, Target::Monitor(*monitor), codec, FPS, bitrate, on_frame)?),
-            Source::Window { hwnd } => Active::Screen(Sender::start(&d3d, Target::Window(*hwnd), codec, FPS, bitrate, on_frame)?),
+            Source::Screen { monitor } => {
+                Active::Screen(Box::new(Sender::start(&d3d, Target::Monitor(*monitor), codec, FPS, bitrate, on_frame, Some(on_low))?))
+            }
+            Source::Window { hwnd } => {
+                Active::Screen(Box::new(Sender::start(&d3d, Target::Window(*hwnd), codec, FPS, bitrate, on_frame, Some(on_low))?))
+            }
             Source::Camera { device } => {
-                Active::Camera(CameraSender::start(&d3d, device.as_deref(), codec, bitrate, on_frame)?)
+                Active::Camera(Box::new(CameraSender::start(&d3d, device.as_deref(), codec, bitrate, on_frame)?))
             }
         })
     }
@@ -110,6 +114,13 @@ impl Active {
         }
     }
 
+    /// Simulcast: só a tela tem camada baixa.
+    fn set_low_layer(&mut self, on: bool) {
+        if let Active::Screen(s) = self {
+            s.set_low_layer(on);
+        }
+    }
+
     /// Um passo do laço. Sem ninguém assistindo (`encode: false`), a tela só
     /// espera; a câmera continua lendo para não acumular quadros velhos.
     fn step(&mut self, encode: bool, keyframe: bool) -> anyhow::Result<()> {
@@ -130,6 +141,8 @@ struct ShareControl {
     stop: AtomicBool,
     keyframe: AtomicBool,
     watchers: AtomicU32,
+    /// Alguém recebe a camada baixa do simulcast.
+    low: AtomicBool,
     codec: Mutex<Codec>,
     error: Mutex<Option<String>>,
 }
@@ -149,6 +162,7 @@ impl GpuShare {
             stop: AtomicBool::new(false),
             keyframe: AtomicBool::new(true),
             watchers: AtomicU32::new(0),
+            low: AtomicBool::new(false),
             codec: Mutex::new(codec),
             error: Mutex::new(None),
         });
@@ -176,6 +190,11 @@ impl GpuShare {
 
     pub fn set_watchers(&self, count: u32) {
         self.ctl.watchers.store(count, Ordering::Relaxed);
+    }
+
+    /// O relay passou alguém para a camada baixa (ou ninguém precisa mais).
+    pub fn set_low_layer(&self, on: bool) {
+        self.ctl.low.store(on, Ordering::Relaxed);
     }
 
     /// Codec negociado mudou (alguém entrou sem decodificar o atual).
@@ -211,7 +230,10 @@ fn share_loop(
     };
     let o = out.clone();
     let on_frame: encode::OnFrame = Arc::new(move |f: EncodedFrame| o.send(f.keyframe, f.codec, &f.data));
-    let mut active = match Active::start(source, codec, rc.bitrate, on_frame) {
+    let o = out.clone();
+    let on_low: encode::OnFrame =
+        Arc::new(move |f: EncodedFrame| o.send_layer(lerri_core::media::LAYER_LOW, f.keyframe, f.codec, &f.data));
+    let mut active = match Active::start(source, codec, rc.bitrate, on_frame, on_low) {
         Ok(a) => {
             let _ = ready.send(Ok(a.description()));
             a
@@ -232,6 +254,7 @@ fn share_loop(
                 Err(e) => tracing::warn!("vídeo: não deu para trocar para {}: {e:#}", desired.name()),
             }
         }
+        active.set_low_layer(ctl.low.load(Ordering::Relaxed));
         // Ninguém assistindo: não gasta GPU nem rede.
         let watched = ctl.watchers.load(Ordering::Relaxed) > 0;
         let in_flight = out.in_flight();
@@ -354,6 +377,8 @@ fn view_loop(
 ) -> anyhow::Result<()> {
     let mut reorder = Reorder::default();
     let mut decoder: Option<Decoder> = None;
+    // Camada do simulcast decodificada agora; outra resolução pede decoder novo.
+    let mut layer = lerri_core::media::LAYER_HIGH;
     loop {
         let msg = match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(m) => m,
@@ -376,6 +401,10 @@ fn view_loop(
             ViewerMsg::Stop => return Ok(()),
             ViewerMsg::Frame(f) => {
                 for f in reorder.push(f, Instant::now()) {
+                    if f.layer != layer {
+                        layer = f.layer;
+                        decoder = None;
+                    }
                     if decoder.as_ref().is_none_or(|d| d.codec != f.codec) {
                         decoder = Some(Decoder::new(f.codec, &d3d.device)?);
                     }

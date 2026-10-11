@@ -17,6 +17,10 @@ use super::encode::{Encoder, OnFrame};
 
 /// Maior resolução transmitida (SPEC-04 §2: 1080p).
 pub const MAX_SIZE: (u32, u32) = (1920, 1080);
+/// Camada baixa do simulcast: para quem está com a rede ruim.
+pub const LOW_SIZE: (u32, u32) = (640, 360);
+const LOW_BITRATE: u32 = 400_000;
+const LOW_FPS: u32 = 30;
 /// Texturas NV12 em rodízio: o encoder pode ainda estar lendo a anterior.
 const RING: usize = 4;
 
@@ -24,7 +28,16 @@ const RING: usize = 4;
 /// em pé, como a tela), mantém a proporção e tem lados pares (exigência do
 /// NV12).
 pub fn target_size(src: (u32, u32)) -> (u32, u32) {
-    let max = if src.1 > src.0 { (MAX_SIZE.1, MAX_SIZE.0) } else { MAX_SIZE };
+    fit_even(src, MAX_SIZE)
+}
+
+/// Tamanho da camada baixa para uma tela `src` (cabe em [`LOW_SIZE`]).
+pub fn low_size(src: (u32, u32)) -> (u32, u32) {
+    fit_even(src, LOW_SIZE)
+}
+
+fn fit_even(src: (u32, u32), max: (u32, u32)) -> (u32, u32) {
+    let max = if src.1 > src.0 { (max.1, max.0) } else { max };
     let (w, h) = if src.0 <= max.0 && src.1 <= max.1 {
         src
     } else {
@@ -34,8 +47,22 @@ pub fn target_size(src: (u32, u32)) -> (u32, u32) {
     ((w & !1).max(2), (h & !1).max(2))
 }
 
+/// Camada baixa do simulcast: codificada só enquanto o relay diz que alguém
+/// precisa dela.
+struct Low {
+    on_frame: OnFrame,
+    enabled: bool,
+    encoder: Option<Encoder>,
+    conv: Option<Converter>,
+    ring: Vec<ID3D11Texture2D>,
+    next: usize,
+    size: (u32, u32),
+    last_encode: Option<Instant>,
+}
+
 pub struct Sender {
     d3d: D3D,
+    low: Option<Low>,
     capture: Capture,
     conv: Option<Converter>,
     ring: Vec<ID3D11Texture2D>,
@@ -49,12 +76,79 @@ pub struct Sender {
 }
 
 impl Sender {
-    pub fn start(d3d: &D3D, target: Target, codec: Codec, fps: u32, bitrate: u32, on_frame: OnFrame) -> anyhow::Result<Self> {
+    /// `on_low`: para onde vão os quadros da camada baixa do simulcast
+    /// (`None`: sem simulcast).
+    pub fn start(
+        d3d: &D3D,
+        target: Target,
+        codec: Codec,
+        fps: u32,
+        bitrate: u32,
+        on_frame: OnFrame,
+        on_low: Option<OnFrame>,
+    ) -> anyhow::Result<Self> {
         let capture = Capture::start(d3d, target)?;
         let size = target_size(capture.size);
         let encoder = Encoder::new(d3d, codec, size, fps, bitrate, on_frame.clone())?;
         let ring = (0..RING).map(|_| d3d.texture(size.0, size.1, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET)).collect::<Result<_, _>>()?;
-        Ok(Self { d3d: d3d.clone(), capture, conv: None, ring, next: 0, encoder, on_frame, size, fps, bitrate, last_encode: None })
+        let low = match on_low {
+            Some(on_frame) => {
+                let size = low_size(capture.size);
+                let ring =
+                    (0..RING).map(|_| d3d.texture(size.0, size.1, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET)).collect::<Result<_, _>>()?;
+                Some(Low { on_frame, enabled: false, encoder: None, conv: None, ring, next: 0, size, last_encode: None })
+            }
+            None => None,
+        };
+        Ok(Self { d3d: d3d.clone(), low, capture, conv: None, ring, next: 0, encoder, on_frame, size, fps, bitrate, last_encode: None })
+    }
+
+    /// Liga ou desliga a camada baixa (o relay diz se alguém precisa dela).
+    /// Desligada, o encoder dela é liberado.
+    pub fn set_low_layer(&mut self, on: bool) {
+        if let Some(low) = &mut self.low
+            && low.enabled != on
+        {
+            tracing::info!("vídeo: camada baixa {}", if on { "ligada" } else { "desligada" });
+            low.enabled = on;
+            if !on {
+                low.encoder = None;
+            }
+        }
+    }
+
+    /// Camada baixa: no máximo [`LOW_FPS`], e sempre que pedem keyframe. Um
+    /// erro nela desliga só ela; a alta continua.
+    fn step_low(&mut self, texture: &ID3D11Texture2D, src: (u32, u32), keyframe: bool) {
+        let codec = self.encoder.codec;
+        let Some(low) = self.low.as_mut().filter(|l| l.enabled) else { return };
+        let fresh = low.encoder.is_none();
+        let due = low.last_encode.is_none_or(|t| t.elapsed() >= Duration::from_secs(1) / LOW_FPS);
+        if !(keyframe || fresh || due) {
+            return;
+        }
+        let result = (|| {
+            if low.encoder.is_none() {
+                low.encoder = Some(Encoder::new(&self.d3d, codec, low.size, LOW_FPS, LOW_BITRATE, low.on_frame.clone())?);
+            }
+            if low.conv.as_ref().is_none_or(|c| c.input != src) {
+                let mut conv = self.d3d.converter(src, low.size, Colors::RgbToYuv)?;
+                conv.set_rects(src, fit(src, low.size), low.size);
+                low.conv = Some(conv);
+            }
+            let dst = low.ring[low.next].clone();
+            low.next = (low.next + 1) % RING;
+            low.conv.as_mut().context("conversor")?.convert(texture, 0, &dst)?;
+            low.encoder.as_mut().context("encoder")?.encode(&dst, keyframe || fresh)
+        })();
+        match result {
+            Ok(()) => low.last_encode = Some(Instant::now()),
+            Err(e) => {
+                tracing::warn!("vídeo: camada baixa desligada: {e:#}");
+                low.enabled = false;
+                low.encoder = None;
+            }
+        }
     }
 
     pub fn codec(&self) -> Codec {
@@ -77,6 +171,10 @@ impl Sender {
     pub fn set_codec(&mut self, codec: Codec) -> anyhow::Result<()> {
         if codec != self.encoder.codec {
             self.encoder = Encoder::new(&self.d3d, codec, self.size, self.fps, self.bitrate, self.on_frame.clone())?;
+            if let Some(low) = &mut self.low {
+                // Recriado no próximo quadro, já no codec novo e com keyframe.
+                low.encoder = None;
+            }
         }
         Ok(())
     }
@@ -115,6 +213,7 @@ impl Sender {
         self.conv.as_mut().context("conversor")?.convert(&texture, 0, &dst)?;
         self.encoder.encode(&dst, keyframe)?;
         self.last_encode = Some(Instant::now());
+        self.step_low(&texture, src, keyframe);
         Ok(true)
     }
 }
@@ -165,9 +264,12 @@ mod hw_tests {
         let monitor = capture::monitors().into_iter().next().expect("um monitor");
         let frames: Arc<Mutex<Vec<(Instant, EncodedFrame)>>> = Arc::default();
         let f = frames.clone();
+        let low_frames: Arc<Mutex<Vec<EncodedFrame>>> = Arc::default();
+        let lf = low_frames.clone();
+        let on_low: OnFrame = Arc::new(move |e| lf.lock().unwrap().push(e));
         let mut s = Sender::start(d3d, Target::Monitor(monitor.handle), codec, 60, 4_000_000, Arc::new(move |e| {
             f.lock().unwrap().push((Instant::now(), e));
-        }))
+        }), Some(on_low))
         .unwrap();
         println!("monitor {} {}x{} → vídeo {}x{} {} ({})", monitor.name, monitor.width, monitor.height, s.size.0, s.size.1, codec.name(), s.encoder_name());
 
@@ -175,6 +277,10 @@ mod hw_tests {
         let mut encoded = 0;
         let mut first = true;
         while start.elapsed() < Duration::from_secs(3) {
+            // Na metade, o relay pede a camada baixa.
+            if start.elapsed() > Duration::from_millis(1500) {
+                s.set_low_layer(true);
+            }
             encoded += usize::from(s.step(first, Duration::from_millis(100)).unwrap());
             first = false;
         }
@@ -228,6 +334,20 @@ mod hw_tests {
         let psnr = if mse == 0.0 { 99.0 } else { 10.0 * (255.0 * 255.0 / mse).log10() };
         println!("PSNR Y do último quadro: {psnr:.1} dB");
         assert!(psnr > 30.0, "imagem decodificada ruim: {psnr:.1} dB");
+
+        // Camada baixa: começa num keyframe, pequena, e decodifica no tamanho dela.
+        let low = std::mem::take(&mut *low_frames.lock().unwrap());
+        assert!(!low.is_empty() && low[0].keyframe, "camada baixa não começou num keyframe");
+        let low_bytes: usize = low.iter().map(|f| f.data.len()).sum();
+        let mut decoder = Decoder::new(codec, &d3d.device).unwrap();
+        let mut last_low = None;
+        for f in &low {
+            if let Some(d) = decoder.decode(&f.data).unwrap() {
+                last_low = Some((d.width, d.height));
+            }
+        }
+        println!("camada baixa: {} quadros, {:?}, {:.0} kbps", low.len(), last_low, low_bytes as f64 * 8.0 / 1.5 / 1000.0);
+        assert_eq!(last_low, Some(low_size((monitor.width, monitor.height))));
 
         // Exibição: janela de verdade (escondida) + janela-filha + swapchain.
         show_in_window(d3d, &last);

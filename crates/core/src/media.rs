@@ -160,9 +160,14 @@ mod codec_tests {
 /// (256 streams em paralelo × 1 MiB).
 pub const MAX_VIDEO_FRAME: usize = 1024 * 1024;
 
+/// Camadas de simulcast da tela (SPEC-04 §2): a alta (até 1080p) e a baixa
+/// (360p), para quem está com a rede ruim. Cada camada tem a sua sequência.
+pub const LAYER_HIGH: u8 = 0;
+pub const LAYER_LOW: u8 = 1;
+
 impl Header {
-    pub fn video(video: Video, seq: u16, keyframe: bool) -> Self {
-        Self { kind: video.kind(), keyframe, start: false, layer: 0, seq }
+    pub fn video(video: Video, layer: u8, seq: u16, keyframe: bool) -> Self {
+        Self { kind: video.kind(), keyframe, start: false, layer, seq }
     }
 }
 

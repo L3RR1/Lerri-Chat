@@ -173,12 +173,16 @@ async fn screen_through_blind_relay() {
     screen.send(true, Codec::Hevc, &payload(0, 300_000));
     cam.send(true, Codec::H264, &payload(100, 20_000));
     for seq in 1..30u16 {
+        // 50 fps, como um encoder: bem mais rápido que isso o relay começa a
+        // pular quadros (de propósito). O intervalo também vem antes do
+        // primeiro quadro depois do keyframe: o relay lê cada stream numa
+        // task própria, e um P-frame colado no keyframe pode ter o cabeçalho
+        // lido antes do dele, quando quem assiste ainda espera o keyframe.
+        tokio::time::sleep(Duration::from_millis(20)).await;
         screen.send(false, Codec::Hevc, &payload(seq, 2_000 + usize::from(seq) * 100));
         if seq < 15 {
             cam.send(false, Codec::H264, &payload(100 + seq, 3_000));
         }
-        // 50 fps: bem mais rápido que isso o relay começa a pular quadros (de propósito).
-        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     for (i, f) in collect(&mut a_frames, 30).await.iter().enumerate() {
         let seq = i as u16;

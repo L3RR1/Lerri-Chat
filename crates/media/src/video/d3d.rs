@@ -204,6 +204,11 @@ impl Converter {
         }
     }
 
+    /// Espelha a imagem na horizontal.
+    pub fn set_mirror(&mut self, on: bool) {
+        unsafe { self.d3d.vctx.VideoProcessorSetStreamMirror(&self.processor, 0, on, on, false) };
+    }
+
     fn output_view(&mut self, tex: &ID3D11Texture2D) -> anyhow::Result<ID3D11VideoProcessorOutputView> {
         let key = tex.as_raw() as usize;
         if let Some((_, v)) = self.outputs.iter().find(|(k, _)| *k == key) {

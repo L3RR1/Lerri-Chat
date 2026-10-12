@@ -278,6 +278,12 @@ pub enum Command {
     /// Janela principal minimizada: para de receber e decodificar o que
     /// assiste (`true`) e volta num keyframe (`false`).
     PauseVideo(bool),
+    /// Mostra a nossa câmera na janela-filha dada (pixels físicos), direto da
+    /// captura, sem passar pela rede; `None` fecha (a janela volta por
+    /// [`RoomEvent::VideoClosed`]).
+    Preview(Option<(isize, (u32, u32))>),
+    /// Troca o nosso apelido e avisa o grupo.
+    SetNickname(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -654,6 +660,20 @@ impl RoomCore {
             self.settings.push_to_talk_key = key;
         }
         self.save_settings(data_dir);
+    }
+
+    pub fn set_nickname(&mut self, nick: &str, data_dir: &Path) {
+        let nick = clean_nick(nick);
+        if nick == self.settings.nickname {
+            return;
+        }
+        self.settings.nickname = nick.clone();
+        self.save_settings(data_dir);
+        // Vazio não é anunciado: os outros continuam com o último apelido.
+        if self.in_group() && !nick.is_empty() {
+            self.send_payload(&Payload::Profile { nick });
+        }
+        self.refresh();
     }
 
     fn save_settings(&mut self, data_dir: &Path) {
@@ -1192,6 +1212,8 @@ pub async fn run(
                 Some(Command::Unwatch { member, video }) => media.unwatch(&mut core, member, video, &emit),
                 Some(Command::VideoResize { window, size }) => media.resize(window, size),
                 Some(Command::PauseVideo(paused)) => media.pause(&mut core, paused),
+                Some(Command::Preview(want)) => media.preview(want, &emit),
+                Some(Command::SetNickname(nick)) => core.set_nickname(&nick, &data_dir),
             },
             _ = tick.tick() => {
                 route(session.route());
@@ -1294,6 +1316,10 @@ struct Media {
     watching: crate::screen::Watching,
     incoming: tokio::task::JoinHandle<()>,
     video_caps: Option<VideoCaps>,
+    /// Janela da prévia da nossa câmera.
+    preview: Option<isize>,
+    /// Prévias fechadas cuja janela a thread da câmera ainda não largou.
+    preview_closing: Vec<isize>,
 }
 
 impl Media {
@@ -1316,6 +1342,8 @@ impl Media {
             watching,
             incoming,
             video_caps: None,
+            preview: None,
+            preview_closing: Vec::new(),
         }
     }
 
@@ -1359,6 +1387,7 @@ impl Media {
     fn close(&mut self, emit: &impl Fn(RoomEvent)) {
         self.voice = None;
         self.shares.clear();
+        self.release_previews(emit);
         self.watching.lock().unwrap().clear();
         for (_, v) in self.viewers.drain() {
             Self::drop_viewer(v, emit);
@@ -1540,6 +1569,10 @@ impl Media {
         if self.shares.remove(&video).is_none() {
             return;
         }
+        if video == Video::Camera {
+            // A thread da câmera já parou e largou a swapchain da prévia.
+            self.release_previews(emit);
+        }
         core.set_publishing(video, false);
         self.views.remove(&video);
         self.emit_view(video, emit);
@@ -1665,7 +1698,39 @@ impl Media {
         }
     }
 
+    /// Prévia da nossa câmera: abre na janela dada ou fecha. Sem câmera no
+    /// ar, a janela volta na hora.
+    fn preview(&mut self, want: Option<(isize, (u32, u32))>, emit: &impl Fn(RoomEvent)) {
+        #[cfg(windows)]
+        if let Some(g) = self.shares.get(&Video::Camera).and_then(|s| s.gpu.as_ref()) {
+            if let Some(old) = self.preview.take().filter(|old| want.is_none_or(|(h, _)| h != *old)) {
+                self.preview_closing.push(old);
+            }
+            g.set_preview(want);
+            self.preview = want.map(|(h, _)| h);
+            return;
+        }
+        // Sem câmera no ar, nada desenha nessas janelas.
+        if let Some((window, _)) = want {
+            emit(RoomEvent::VideoClosed { window });
+        }
+        self.release_previews(emit);
+    }
+
+    /// A câmera parou: as janelas de prévia já podem ser destruídas.
+    fn release_previews(&mut self, emit: &impl Fn(RoomEvent)) {
+        for window in self.preview.take().into_iter().chain(self.preview_closing.drain(..)) {
+            emit(RoomEvent::VideoClosed { window });
+        }
+    }
+
     fn resize(&mut self, window: isize, size: (u32, u32)) {
+        #[cfg(windows)]
+        if self.preview == Some(window)
+            && let Some(g) = self.shares.get(&Video::Camera).and_then(|s| s.gpu.as_ref())
+        {
+            g.set_preview(Some((window, size)));
+        }
         #[cfg(windows)]
         if let Some(g) = self.viewers.values().filter_map(|v| v.gpu.as_ref()).find(|g| g.window == Some(window)) {
             g.resize(size);
@@ -1752,6 +1817,14 @@ impl Media {
             for video in stopped {
                 self.unpublish(core, video, emit);
             }
+            let shown = self.shares.get(&Video::Camera).and_then(|s| s.gpu.as_ref()).and_then(|g| g.preview_window());
+            self.preview_closing.retain(|&window| {
+                let free = shown != Some(window);
+                if free {
+                    emit(RoomEvent::VideoClosed { window });
+                }
+                !free
+            });
         }
     }
 }

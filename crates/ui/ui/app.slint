@@ -64,6 +64,7 @@ export struct MemberRow {
     watching-camera: bool,
     // Ida e volta estimada até a pessoa, em ms; -1: ainda sem medida.
     latency: int,
+    has-nick: bool,
 }
 
 // Um vídeo assistido na grade da sala. A posição (relativa à grade) vem do
@@ -71,6 +72,8 @@ export struct MemberRow {
 export struct VideoTile {
     label: string,
     camera: bool,
+    // A prévia da nossa câmera.
+    own: bool,
     x: length,
     y: length,
     width: length,
@@ -320,6 +323,10 @@ component Field inherits Rectangle {
     callback edited();
     property <length> pad: 12px;
     property <length> scroll: 12px;
+
+    public function focus-input() {
+        input.focus();
+    }
 
     height: root.large ? 44px : 36px;
     min-width: 120px;
@@ -1036,7 +1043,16 @@ component RoomView inherits VerticalLayout {
     // Vídeos assistidos (telas e câmeras juntas), em grade.
     in property <[VideoTile]> tiles;
     in property <int> max-tiles: 4;
+    // A prévia da nossa câmera está na grade (fora do limite acima).
+    in property <bool> preview-on;
+    property <bool> grid-full: root.tiles.length - (root.preview-on ? 1 : 0) >= root.max-tiles;
     callback close-tile(int);
+    callback toggle-preview();
+    // Apelido, trocado direto na lista de membros.
+    in property <string> nickname;
+    callback set-nickname(string);
+    property <bool> editing-nick;
+    property <string> nick-draft;
     // Área da grade, em pixels lógicos: o Rust divide em células e põe as
     // janelas de vídeo (filhas, D3D11) em cima delas.
     out property <length> stage-x: stage.absolute-position.x;
@@ -1207,17 +1223,24 @@ component RoomView inherits VerticalLayout {
                                 }
                             }
                             Text {
-                                text: (t.camera ? "Câmera de " : "Tela de ") + t.label;
+                                text: t.own ? "Sua câmera" : (t.camera ? "Câmera de " : "Tela de ") + t.label;
                                 color: Theme.text;
                                 font-weight: 600;
                                 vertical-alignment: center;
                                 overflow: elide;
-                                horizontal-stretch: 1;
                             }
+                            if t.own: Text {
+                                text: "espelhada só para você";
+                                color: Theme.text-dim;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
                             Btn {
                                 compact: true;
                                 icon: @image-url("icons/x.png");
-                                label: "Fechar " + (t.camera ? "câmera de " : "tela de ") + t.label;
+                                label: t.own ? "Esconder sua câmera" : "Fechar " + (t.camera ? "câmera de " : "tela de ") + t.label;
                                 clicked => { root.close-tile(i); }
                             }
                         }
@@ -1227,7 +1250,7 @@ component RoomView inherits VerticalLayout {
                             height: max(0px, parent.height - 38px);
                             background: Theme.surface;
                             border-radius: Theme.r-control;
-                            Text { text: "Aguardando a imagem…"; color: Theme.text-dim; }
+                            Text { text: t.own ? "Ligando a câmera…" : "Aguardando a imagem…"; color: Theme.text-dim; }
                         }
                     }
                 }
@@ -1267,24 +1290,51 @@ component RoomView inherits VerticalLayout {
                             }
                         }
                     }
-                    // Sala vazia: diz o que acontece aqui e por que é seguro.
+                    // Sala vazia: o próximo passo (chamar alguém) e por que é seguro.
                     if root.chat.length == 0 && self.height > 180px: VerticalLayout {
+                        property <bool> alone: root.members.length <= 1;
                         width: parent.width;
                         height: parent.height;
                         alignment: center;
                         spacing: 8px;
                         HorizontalLayout {
                             alignment: center;
-                            Icon { source: @image-url("icons/message-circle.png"); colorize: Theme.violet-bright; width: 28px; height: 28px; }
+                            Icon {
+                                source: alone ? @image-url("icons/user-plus.png") : @image-url("icons/message-circle.png");
+                                colorize: Theme.violet-bright;
+                                width: 28px;
+                                height: 28px;
+                            }
                         }
-                        Text { text: "A conversa começa aqui"; color: Theme.text; font-size: 15px; font-weight: 600; horizontal-alignment: center; }
+                        Text {
+                            text: alone ? "Só você por aqui, por enquanto" : "A conversa começa aqui";
+                            color: Theme.text;
+                            font-size: 15px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                        }
                         HorizontalLayout {
                             alignment: center;
                             Dim {
-                                max-width: 380px;
-                                text: "As mensagens são cifradas no seu PC. Quem hospeda a sala só repassa bytes que não consegue ler.";
+                                max-width: 400px;
+                                text: !alone ? "As mensagens são cifradas no seu PC. Quem hospeda a sala só repassa bytes que não consegue ler."
+                                    : root.is-owner ? "Mande um convite para quem você quer chamar. Cada convite serve para uma pessoa e vale por 24 horas."
+                                    : "Quando outras pessoas entrarem, elas aparecem na lista ao lado.";
                                 font-size: 13px;
                                 horizontal-alignment: center;
+                            }
+                        }
+                        if alone && root.is-owner && !root.side-invite: HorizontalLayout {
+                            alignment: center;
+                            padding-top: 6px;
+                            Btn {
+                                text: "Convidar alguém";
+                                icon: @image-url("icons/user-plus.png");
+                                primary: true;
+                                clicked => {
+                                    root.show-audio = false;
+                                    root.show-invite = true;
+                                }
                             }
                         }
                     }
@@ -1507,6 +1557,40 @@ component RoomView inherits VerticalLayout {
                                 }
                                 if m.speaking: Waveform { still: root.reduce-motion; tick: root.wave-tick; }
                             }
+                            // O seu apelido: troca ali mesmo, sem sair da sala.
+                            if m.me && !root.editing-nick: HorizontalLayout {
+                                alignment: start;
+                                padding-left: 48px;
+                                Btn {
+                                    compact: true;
+                                    text: m.has-nick ? "Mudar apelido" : "Escolher apelido";
+                                    tonal: !m.has-nick;
+                                    clicked => {
+                                        root.nick-draft = root.nickname;
+                                        root.editing-nick = true;
+                                    }
+                                }
+                            }
+                            if m.me && root.editing-nick: VerticalLayout {
+                                spacing: 6px;
+                                padding-left: 48px;
+                                Field {
+                                    label: "Apelido";
+                                    text <=> root.nick-draft;
+                                    placeholder-text: "Como a sala vai te chamar";
+                                    init => { self.focus-input(); }
+                                    accepted => {
+                                        root.set-nickname(root.nick-draft);
+                                        root.editing-nick = false;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: start;
+                                    Btn { compact: true; text: "Salvar"; primary: true; clicked => { root.set-nickname(root.nick-draft); root.editing-nick = false; } }
+                                    Btn { compact: true; text: "Cancelar"; clicked => { root.editing-nick = false; } }
+                                }
+                            }
                             if ((m.sharing || m.camera) && !m.me && root.watch-problem == "") || (root.is-owner && !m.me && !m.waiting && root.confirm-remove != i): HorizontalLayout {
                                 spacing: 6px;
                                 alignment: start;
@@ -1514,18 +1598,22 @@ component RoomView inherits VerticalLayout {
                                 // Com a grade cheia, só dá para fechar.
                                 if m.sharing && !m.me && root.watch-problem == "": Btn {
                                     compact: true;
-                                    text: m.watching ? "Fechar tela" : "Assistir";
+                                    text: m.watching ? "Fechar tela" : "Ver tela";
+                                    label: (m.watching ? "Fechar a tela de " : "Ver a tela de ") + m.label;
+                                    icon: @image-url("icons/screen-share.png");
                                     tonal: !m.watching;
-                                    enabled: m.watching || root.tiles.length < root.max-tiles;
+                                    enabled: m.watching || !root.grid-full;
                                     clicked => {
                                         if (m.watching) { root.unwatch-member(i); } else { root.watch-member(i); }
                                     }
                                 }
                                 if m.camera && !m.me && root.watch-problem == "": Btn {
                                     compact: true;
-                                    text: m.watching-camera ? "Fechar câmera" : "Câmera";
+                                    text: m.watching-camera ? "Fechar câmera" : "Ver câmera";
+                                    label: (m.watching-camera ? "Fechar a câmera de " : "Ver a câmera de ") + m.label;
+                                    icon: @image-url("icons/video.png");
                                     tonal: !m.watching-camera;
-                                    enabled: m.watching-camera || root.tiles.length < root.max-tiles;
+                                    enabled: m.watching-camera || !root.grid-full;
                                     clicked => {
                                         if (m.watching-camera) { root.unwatch-camera(i); } else { root.watch-camera(i); }
                                     }
@@ -1600,7 +1688,7 @@ component RoomView inherits VerticalLayout {
                 if root.voice-active: VerticalLayout {
                     alignment: center;
                     Btn {
-                        text: root.narrow ? "" : root.voice-muted ? "Ativar mic" : "Mudo";
+                        text: root.narrow ? "" : root.voice-muted ? "Ativar mic" : "Silenciar";
                         label: root.voice-muted ? "Ativar microfone" : "Silenciar microfone";
                         icon: root.voice-muted ? @image-url("icons/microphone-off.png") : @image-url("icons/microphone.png");
                         on: root.voice-muted;
@@ -1669,7 +1757,7 @@ component RoomView inherits VerticalLayout {
                 if root.screen-sharing: VerticalLayout {
                     alignment: center;
                     Btn {
-                        text: root.narrow ? "" : "Parar";
+                        text: root.narrow ? "" : "Parar tela";
                         label: root.monitor-index >= root.monitor-count ? "Parar de compartilhar a janela" : "Parar de compartilhar a tela";
                         icon: @image-url("icons/screen-share-off.png");
                         danger: true;
@@ -1684,7 +1772,7 @@ component RoomView inherits VerticalLayout {
                 if !root.camera-on: VerticalLayout {
                     alignment: center;
                     Btn {
-                        text: root.narrow ? "" : root.cameras.length == 0 ? "Sem câmera" : "Câmera";
+                        text: root.narrow ? "" : root.cameras.length == 0 ? "Sem câmera" : "Ligar câmera";
                         label: root.cameras.length == 0 ? "Nenhuma câmera" : "Ligar câmera";
                         icon: @image-url("icons/video.png");
                         enabled: root.admitted && root.can-share && root.cameras.length > 0;
@@ -1699,10 +1787,21 @@ component RoomView inherits VerticalLayout {
                         current-index <=> root.camera-index;
                     }
                 }
+                // Ver a própria imagem (ou esconder a prévia).
                 if root.camera-on: VerticalLayout {
                     alignment: center;
                     Btn {
-                        text: root.narrow ? "" : "Desligar";
+                        text: root.narrow ? "" : root.preview-on ? "Esconder prévia" : "Ver minha câmera";
+                        label: root.preview-on ? "Esconder a prévia da sua câmera" : "Ver a sua câmera";
+                        icon: @image-url("icons/video.png");
+                        tonal: !root.preview-on;
+                        clicked => { root.toggle-preview(); }
+                    }
+                }
+                if root.camera-on: VerticalLayout {
+                    alignment: center;
+                    Btn {
+                        text: root.narrow ? "" : "Desligar câmera";
                         label: "Desligar câmera";
                         icon: @image-url("icons/video-off.png");
                         danger: true;
@@ -1915,6 +2014,9 @@ export component AppWindow inherits Window {
     in-out property <int> camera-index;
     in property <[VideoTile]> tiles;
     in property <int> max-tiles: 4;
+    in property <bool> preview-on;
+    callback toggle-preview();
+    callback set-nickname(string);
     out property <length> stage-x: room-view.stage-x;
     out property <length> stage-y: room-view.stage-y;
     out property <length> stage-width: room-view.stage-width;
@@ -2074,6 +2176,10 @@ export component AppWindow inherits Window {
                 camera-index <=> root.camera-index;
                 tiles: root.tiles;
                 max-tiles: root.max-tiles;
+                preview-on: root.preview-on;
+                toggle-preview => { root.toggle-preview(); }
+                nickname: root.nickname;
+                set-nickname(nick) => { root.set-nickname(nick); }
                 join-voice => { root.join-voice(); }
                 leave-voice => { root.leave-voice(); }
                 toggle-mute => { root.toggle-mute(); }

@@ -108,6 +108,7 @@ Medido na RX 6700 XT, com a tela em movimento o tempo todo: transmissor a **0,09
 | Encode | O mesmo encoder de hardware da tela, 720p (cabe em 1280×720), até 30 fps, bitrate entre 0,2 e 1,5 Mbps (começa em 1,2). |
 | Transporte | Mesmo caminho da tela (`SPEC-03` §6.3), com tipo "câmera" no cabeçalho. O relay desiste antes da câmera do que da tela quando alguém atrasa. |
 | Sem plateia | O encoder para, mas a câmera continua sendo lida (e a luz dela fica acesa) para não acumular quadros velhos. |
+| Prévia | Quem liga a câmera se vê na grade da sala ("Sua câmera", fora do limite de 4 assistidos). Cada quadro lido vai também para uma janela-filha própria, espelhada, direto da textura da câmera: sem encode, decode nem rede, e funciona com ninguém assistindo. Abre sozinha ao ligar a câmera; o "x" ou "Esconder prévia" fecha. A janela só é destruída depois que a thread da câmera larga a swapchain (`Command::Preview`). |
 
 A C920 de referência entrega 15 fps num quarto escuro (a exposição automática alonga o quadro) e 30 fps com luz. Desligar a prioridade de exposição daria 30 fps sempre, com a imagem mais escura; ficou como está.
 

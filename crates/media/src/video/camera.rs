@@ -17,6 +17,7 @@ use windows::core::{GUID, Interface};
 
 use super::d3d::{Colors, Converter, D3D, fit};
 use super::encode::{self, Encoder, OnFrame, attr_string, init_mf};
+use super::render::Screen;
 
 /// Resolução e taxa da câmera (SPEC-04 §3: 720p30).
 pub const CAMERA_SIZE: (u32, u32) = (1280, 720);
@@ -197,10 +198,19 @@ pub fn target_size(src: (u32, u32)) -> (u32, u32) {
     ((w & !1).max(2), (h & !1).max(2))
 }
 
-/// Câmera → NV12 no tamanho do vídeo → encoder de hardware.
+/// Prévia da própria câmera: a janela-filha e a swapchain dela.
+struct Preview {
+    window: isize,
+    screen: Screen,
+}
+
+/// Câmera → NV12 no tamanho do vídeo → encoder de hardware. Com prévia, cada
+/// quadro lido também vai para a janela dela, direto da GPU, mesmo sem
+/// ninguém assistindo.
 pub struct CameraSender {
     d3d: D3D,
     camera: Camera,
+    preview: Option<Preview>,
     conv: Option<Converter>,
     ring: Vec<ID3D11Texture2D>,
     next: usize,
@@ -217,7 +227,32 @@ impl CameraSender {
         let size = target_size(camera.size);
         let encoder = Encoder::new(d3d, codec, size, CAMERA_FPS, bitrate, on_frame.clone())?;
         let ring = (0..RING).map(|_| d3d.texture(size.0, size.1, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET)).collect::<Result<_, _>>()?;
-        Ok(Self { d3d: d3d.clone(), camera, conv: None, ring, next: 0, encoder, on_frame, size, bitrate, last_encode: None })
+        Ok(Self { d3d: d3d.clone(), camera, preview: None, conv: None, ring, next: 0, encoder, on_frame, size, bitrate, last_encode: None })
+    }
+
+    /// Mostra a câmera na janela-filha dada (tamanho em pixels físicos), ou
+    /// para de mostrar (`None`). A mesma janela com outro tamanho só
+    /// redimensiona. Chamar na thread da câmera.
+    pub fn set_preview(&mut self, want: Option<(isize, (u32, u32))>) -> anyhow::Result<()> {
+        match want {
+            None => self.preview = None,
+            Some((window, size)) => match &mut self.preview {
+                Some(p) if p.window == window => p.screen.resize(size)?,
+                p => {
+                    // A anterior sai antes: a janela dela pode sumir logo.
+                    *p = None;
+                    let mut screen = Screen::new(&self.d3d, window, size)?;
+                    screen.set_mirror(true);
+                    *p = Some(Preview { window, screen });
+                }
+            },
+        }
+        Ok(())
+    }
+
+    /// Janela da prévia em uso agora.
+    pub fn preview_window(&self) -> Option<isize> {
+        self.preview.as_ref().map(|p| p.window)
     }
 
     pub fn codec(&self) -> Codec {
@@ -251,6 +286,13 @@ impl CameraSender {
     /// `encode` (com ninguém assistindo, só lê para a câmera não acumular).
     pub fn step(&mut self, encode: bool, keyframe: bool) -> anyhow::Result<bool> {
         let Some((texture, index)) = self.camera.read()? else { return Ok(false) };
+        if let Some(p) = &mut self.preview
+            && let Err(e) = p.screen.present_nv12(&texture, index, self.camera.size)
+        {
+            // Sem prévia a câmera continua no ar para quem assiste.
+            tracing::warn!("câmera: prévia desligada: {e:#}");
+            self.preview = None;
+        }
         // Câmeras que entregam acima de 30 fps: pula o excedente.
         let interval = Duration::from_secs(1) / CAMERA_FPS;
         let early = self.last_encode.is_some_and(|t| t.elapsed() + Duration::from_millis(3) < interval);
@@ -355,5 +397,59 @@ mod hw_tests {
         }
         println!("{decoded} quadros decodificados");
         assert_eq!(decoded, frames.len());
+    }
+
+    /// Prévia: a câmera desenha numa janela-filha de verdade, sem ninguém
+    /// assistindo, troca de tamanho e de janela, e fecha.
+    #[test]
+    #[ignore = "usa a câmera e a GPU desta máquina"]
+    fn camera_preview() {
+        use crate::video::render::{self, Rect};
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        use windows::core::w;
+        let d3d = D3D::new().unwrap();
+        let codec = encode_caps().into_iter().find(|c| *c != Codec::Av1).expect("encoder");
+        let mut s = CameraSender::start(&d3d, None, codec, 1_200_000, Arc::new(|_| {})).unwrap();
+        let top = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("prévia"),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                900,
+                600,
+                None,
+                None,
+                Some(GetModuleHandleW(None).unwrap().into()),
+                None,
+            )
+            .unwrap()
+        };
+        let a = render::create_child(top.0 as isize, Rect { x: 0, y: 0, w: 640, h: 360 }).unwrap();
+        let b = render::create_child(top.0 as isize, Rect { x: 0, y: 0, w: 320, h: 180 }).unwrap();
+        let run = |s: &mut CameraSender, frames: usize| {
+            let mut n = 0;
+            while n < frames {
+                s.step(false, false).unwrap();
+                n += 1;
+            }
+        };
+        s.set_preview(Some((a, (640, 360)))).unwrap();
+        run(&mut s, 30);
+        assert_eq!(s.preview_window(), Some(a), "a prévia caiu ao desenhar");
+        s.set_preview(Some((a, (480, 270)))).unwrap();
+        run(&mut s, 10);
+        s.set_preview(Some((b, (320, 180)))).unwrap();
+        run(&mut s, 10);
+        assert_eq!(s.preview_window(), Some(b));
+        s.set_preview(None).unwrap();
+        assert_eq!(s.preview_window(), None);
+        render::destroy_child(a);
+        render::destroy_child(b);
+        unsafe { DestroyWindow(top).unwrap() };
+        println!("prévia da câmera: ok ({})", s.description());
     }
 }

@@ -72,6 +72,8 @@ struct Tile {
     member: MemberId,
     video: Video,
     label: String,
+    /// Prévia da nossa câmera (não conta no limite dos assistidos).
+    own: bool,
     cell: Cell,
     /// Janela-filha e onde ela está (pixels físicos). `None` até abrir.
     window: Option<(isize, Rect)>,
@@ -130,13 +132,15 @@ pub fn camera(index: usize) -> Option<String> {
 }
 
 /// Põe uma célula na grade para o vídeo (ainda sem janela). `false` se ele
-/// já está lá ou a grade está cheia.
-pub fn add(ui: &AppWindow, member: MemberId, video: Video, label: String) -> bool {
+/// já está lá ou a grade está cheia. `own`: a prévia da nossa câmera, que
+/// fica fora do limite de [`MAX_TILES`] assistidos.
+pub fn add(ui: &AppWindow, member: MemberId, video: Video, label: String, own: bool) -> bool {
     let added = STATE.with_borrow_mut(|s| {
-        if s.tiles.len() >= MAX_TILES || s.tiles.iter().any(|t| t.member == member && t.video == video) {
+        let watched = s.tiles.iter().filter(|t| !t.own).count();
+        if (!own && watched >= MAX_TILES) || s.tiles.iter().any(|t| t.member == member && t.video == video) {
             return false;
         }
-        s.tiles.push(Tile { member, video, label, cell: Cell::default(), window: None });
+        s.tiles.push(Tile { member, video, label, own, cell: Cell::default(), window: None });
         true
     });
     if added {
@@ -145,9 +149,14 @@ pub fn add(ui: &AppWindow, member: MemberId, video: Video, label: String) -> boo
     added
 }
 
-/// Vídeo da célula `index`.
-pub fn tile(index: usize) -> Option<(MemberId, Video)> {
-    STATE.with_borrow(|s| s.tiles.get(index).map(|t| (t.member, t.video)))
+/// Vídeo da célula `index` e se é a nossa prévia.
+pub fn tile(index: usize) -> Option<(MemberId, Video, bool)> {
+    STATE.with_borrow(|s| s.tiles.get(index).map(|t| (t.member, t.video, t.own)))
+}
+
+/// A prévia da nossa câmera está na grade.
+pub fn has_preview() -> bool {
+    STATE.with_borrow(|s| s.tiles.iter().any(|t| t.own))
 }
 
 /// Tira a célula (a janela, se houver, a sala devolve por `closed`).
@@ -182,6 +191,7 @@ fn push(ui: &AppWindow) {
             .map(|t| VideoTile {
                 label: t.label.clone().into(),
                 camera: t.video == Video::Camera,
+                own: t.own,
                 x: t.cell.x,
                 y: t.cell.y,
                 width: t.cell.w,
@@ -192,6 +202,7 @@ fn push(ui: &AppWindow) {
     let model = ui.get_tiles();
     let same = model.row_count() == tiles.len() && model.iter().zip(&tiles).all(|(a, b)| a == *b);
     if !same {
+        ui.set_preview_on(tiles.iter().any(|t| t.own));
         ui.set_tiles(ModelRc::new(VecModel::from(tiles)));
     }
 }

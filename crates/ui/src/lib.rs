@@ -9,7 +9,7 @@ mod clock;
 mod qr;
 mod video;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -55,7 +55,9 @@ struct App {
     saved: RefCell<Vec<SavedRoom>>,
     /// Membros mostrados agora (para o botão "Remover" achar o id).
     members: Arc<Mutex<Vec<MemberView>>>,
-    /// O que estamos assistindo (para os botões "Fechar" acharem o membro).
+    /// Mostrar a prévia da nossa câmera quando ela estiver no ar (liga ao
+    /// ligar a câmera; desliga quando a pessoa fecha a prévia).
+    preview_wanted: Cell<bool>,
     /// Microfones e saídas mostrados no painel "Voz e áudio" (sem o "Padrão").
     audio: Arc<Mutex<(Vec<String>, Vec<String>)>>,
 }
@@ -82,6 +84,7 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         saved: RefCell::new(Vec::new()),
         members: Arc::default(),
         audio: Arc::default(),
+        preview_wanted: Cell::new(false),
     });
     app.refresh_saved();
 
@@ -185,9 +188,30 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     ui.on_start_camera(move || {
         let device = video::camera(a.ui().get_camera_index().max(0) as usize);
         a.send(Command::Publish { source: PublishSource::Camera { device }, gpu: true });
+        // A prévia abre sozinha quando a câmera entrar no ar.
+        a.preview_wanted.set(true);
     });
     let a = app.clone();
-    ui.on_stop_camera(move || a.send(Command::Unpublish(Video::Camera)));
+    ui.on_stop_camera(move || {
+        a.preview_wanted.set(false);
+        a.send(Command::Unpublish(Video::Camera));
+    });
+    let a = app.clone();
+    ui.on_toggle_preview(move || {
+        if video::has_preview() {
+            a.preview_wanted.set(false);
+            a.send(Command::Preview(None));
+        } else {
+            a.preview_wanted.set(true);
+            a.show_preview();
+        }
+    });
+    let a = app.clone();
+    ui.on_set_nickname(move |nick| {
+        let nick = clean_nick(&nick);
+        a.ui().set_nickname(nick.clone().into());
+        a.send(Command::SetNickname(nick));
+    });
     let a = app.clone();
     ui.on_watch_member(move |i| a.watch(i as usize, Video::Screen));
     let a = app.clone();
@@ -197,10 +221,13 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
     let a = app.clone();
     ui.on_unwatch_camera(move |i| a.unwatch(i as usize, Video::Camera));
     let a = app.clone();
-    ui.on_close_tile(move |i| {
-        if let Some((member, video)) = video::tile(i as usize) {
-            a.send(Command::Unwatch { member, video });
+    ui.on_close_tile(move |i| match video::tile(i as usize) {
+        Some((_, _, true)) => {
+            a.preview_wanted.set(false);
+            a.send(Command::Preview(None));
         }
+        Some((member, video, false)) => a.send(Command::Unwatch { member, video }),
+        None => {}
     });
     ui.set_max_tiles(video::MAX_TILES as i32);
     // As janelas-filhas de vídeo acompanham suas áreas na tela da sala.
@@ -212,6 +239,10 @@ pub fn run(data_dir: PathBuf, initial_link: Option<String>) -> anyhow::Result<()
         let window = ui.window();
         ui.set_narrow((window.size().width as f32 / window.scale_factor()) < 1000.0);
         ui.set_reduce_motion(!animations_enabled());
+        // Câmera no ar e prévia pedida: abre assim que a sala confirmar.
+        if ui.get_camera_on() && a.preview_wanted.get() && !video::has_preview() && ui.get_screen() == "room" {
+            a.show_preview();
+        }
         for change in video::follow(&ui) {
             match change {
                 video::Change::Resized { window, size } => a.send(Command::VideoResize { window, size }),
@@ -258,7 +289,18 @@ impl App {
     /// na grade, espera o layout e põe a janela-filha em cima dela.
     fn watch(self: &Rc<Self>, i: usize, video: Video) {
         let Some(m) = self.members.lock().unwrap().get(i).cloned() else { return };
-        if !video::add(&self.ui(), m.id, video, m.label()) {
+        self.open_tile(m.id, video, m.label(), false);
+    }
+
+    /// Mostra a nossa câmera na grade, como os outros a veem (só que espelhada).
+    fn show_preview(self: &Rc<Self>) {
+        self.open_tile(self.identity.member_id(), Video::Camera, "Você".into(), true);
+    }
+
+    /// Abre uma célula na grade, espera o layout e põe a janela-filha em
+    /// cima dela; a sala desenha ali o vídeo assistido ou a nossa prévia.
+    fn open_tile(self: &Rc<Self>, member: MemberId, video: Video, label: String, own: bool) {
+        if !video::add(&self.ui(), member, video, label, own) {
             return; // já na grade, ou a grade está cheia (o botão fica apagado)
         }
         let app = self.clone();
@@ -270,12 +312,11 @@ impl App {
                     app.send(Command::VideoResize { window, size });
                 }
             }
-            match video::open(&ui, m.id, video) {
-                Ok((hwnd, size)) => {
-                    app.send(Command::Watch { member: m.id, video, target: WatchTarget::Window { hwnd, size } })
-                }
+            match video::open(&ui, member, video) {
+                Ok((hwnd, size)) if own => app.send(Command::Preview(Some((hwnd, size)))),
+                Ok((hwnd, size)) => app.send(Command::Watch { member, video, target: WatchTarget::Window { hwnd, size } }),
                 Err(e) => {
-                    video::remove(&ui, m.id, video);
+                    video::remove(&ui, member, video);
                     ui.set_error_text(format!("não deu para abrir o vídeo: {e:#}").into());
                 }
             }
@@ -547,15 +588,27 @@ struct View {
 impl View {
     fn name(&self, id: MemberId) -> String {
         if Some(id) == self.me {
-            return "você".into();
+            return "Você".into();
         }
         self.members.iter().find(|m| m.id == id).map_or_else(|| format!("{}…", &id.short()[..8]), MemberView::label)
     }
 
     /// Inicial para o avatar (a do apelido, ou do id).
     fn initial(&self, id: MemberId) -> String {
-        let label = self.members.iter().find(|m| m.id == id).map_or_else(|| id.short(), MemberView::label);
-        initial(&label)
+        match self.members.iter().find(|m| m.id == id) {
+            Some(m) => initial(&display_name(m)),
+            None => initial(&id.short()),
+        }
+    }
+}
+
+/// Nome na lista e no avatar: o seu é "Você" (com o apelido, se houver); os
+/// outros levam o começo da chave, que identifica a pessoa (SPEC-02 §7).
+fn display_name(m: &MemberView) -> String {
+    match (&m.nick, m.me) {
+        (Some(n), true) => format!("{n} (você)"),
+        (None, true) => "Você".into(),
+        _ => m.label(),
     }
 }
 
@@ -756,8 +809,9 @@ fn push_view(ui: &Weak<AppWindow>, v: &View) {
         .members
         .iter()
         .map(|m| MemberRow {
-            label: if m.me { format!("{} (você)", m.label()).into() } else { m.label().into() },
-            initial: initial(&m.label()).into(),
+            label: display_name(m).into(),
+            initial: initial(&display_name(m)).into(),
+            has_nick: m.nick.is_some(),
             online: m.online,
             owner: m.owner,
             me: m.me,

@@ -84,6 +84,8 @@ pub struct Screen {
     swapchain: IDXGISwapChain1,
     size: (u32, u32),
     conv: Option<Converter>,
+    /// Espelhado na horizontal (prévia da própria câmera, como um espelho).
+    mirror: bool,
 }
 
 // SAFETY: a swapchain é usada só pela thread de decode, depois de criada.
@@ -111,7 +113,14 @@ impl Screen {
         unsafe {
             let _ = factory.MakeWindowAssociation(HWND(child as *mut _), DXGI_MWA_NO_ALT_ENTER);
         }
-        Ok(Self { d3d: d3d.clone(), swapchain, size, conv: None })
+        Ok(Self { d3d: d3d.clone(), swapchain, size, conv: None, mirror: false })
+    }
+
+    pub fn set_mirror(&mut self, on: bool) {
+        if on != self.mirror {
+            self.mirror = on;
+            self.conv = None;
+        }
     }
 
     /// A janela mudou de tamanho.
@@ -129,16 +138,24 @@ impl Screen {
 
     /// Mostra um quadro decodificado, com barras pretas se a proporção não bater.
     pub fn present(&mut self, frame: &Decoded) -> anyhow::Result<()> {
+        self.present_nv12(&frame.texture, frame.index, (frame.width, frame.height))
+    }
+
+    /// Mostra a fatia `index` de uma textura NV12 cuja área útil é `size`
+    /// (o pool pode ser maior, alinhado).
+    pub fn present_nv12(&mut self, texture: &ID3D11Texture2D, index: u32, size: (u32, u32)) -> anyhow::Result<()> {
         let mut desc = windows::Win32::Graphics::Direct3D11::D3D11_TEXTURE2D_DESC::default();
-        unsafe { frame.texture.GetDesc(&mut desc) };
+        unsafe { texture.GetDesc(&mut desc) };
         let pool = (desc.Width, desc.Height);
         if self.conv.as_ref().is_none_or(|c| c.input != pool) {
-            self.conv = Some(self.d3d.converter(pool, self.size, Colors::YuvToRgb)?);
+            let mut conv = self.d3d.converter(pool, self.size, Colors::YuvToRgb)?;
+            conv.set_mirror(self.mirror);
+            self.conv = Some(conv);
         }
         let conv = self.conv.as_mut().expect("criado acima");
-        conv.set_rects((frame.width, frame.height), fit((frame.width, frame.height), self.size), self.size);
+        conv.set_rects(size, fit(size, self.size), self.size);
         let back: ID3D11Texture2D = unsafe { self.swapchain.GetBuffer(0)? };
-        conv.convert(&frame.texture, frame.index, &back)?;
+        conv.convert(texture, index, &back)?;
         unsafe { self.swapchain.Present(1, DXGI_PRESENT(0)).ok().context("Present")? };
         Ok(())
     }

@@ -132,6 +132,16 @@ impl Active {
 
     /// Um passo do laço. Sem ninguém assistindo (`encode: false`), a tela só
     /// espera; a câmera continua lendo para não acumular quadros velhos.
+    /// Prévia da própria câmera (a tela não tem). Devolve a janela em uso.
+    fn set_preview(&mut self, want: Option<(isize, (u32, u32))>) -> Option<isize> {
+        let Active::Camera(c) = self else { return None };
+        if let Err(e) = c.set_preview(want) {
+            tracing::warn!("câmera: não deu para mostrar a prévia: {e:#}");
+            let _ = c.set_preview(None);
+        }
+        c.preview_window()
+    }
+
     fn step(&mut self, encode: bool, keyframe: bool) -> anyhow::Result<()> {
         match self {
             Active::Screen(_) if !encode => std::thread::sleep(Duration::from_millis(100)),
@@ -154,6 +164,9 @@ struct ShareControl {
     low: AtomicBool,
     codec: Mutex<Codec>,
     error: Mutex<Option<String>>,
+    /// Prévia pedida (janela-filha e tamanho) e a janela que a thread usa agora.
+    preview_want: Mutex<Option<(isize, (u32, u32))>>,
+    preview_shown: Mutex<Option<isize>>,
 }
 
 /// Nossa tela ou câmera sendo transmitida.
@@ -176,6 +189,8 @@ impl GpuShare {
             low: AtomicBool::new(false),
             codec: Mutex::new(codec),
             error: Mutex::new(None),
+            preview_want: Mutex::new(None),
+            preview_shown: Mutex::new(None),
         });
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let c = ctl.clone();
@@ -216,6 +231,17 @@ impl GpuShare {
     pub fn error(&self) -> Option<String> {
         self.ctl.error.lock().unwrap().clone()
     }
+
+    /// Mostra a própria câmera na janela-filha dada, ou para (`None`). Quem
+    /// destrói a janela espera [`Self::preview_window`] largá-la.
+    pub fn set_preview(&self, want: Option<(isize, (u32, u32))>) {
+        *self.ctl.preview_want.lock().unwrap() = want;
+    }
+
+    /// Janela onde a thread da câmera desenha agora.
+    pub fn preview_window(&self) -> Option<isize> {
+        *self.ctl.preview_shown.lock().unwrap()
+    }
 }
 
 impl Drop for GpuShare {
@@ -255,7 +281,13 @@ fn share_loop(
             return;
         }
     };
+    let mut preview = None;
     while !ctl.stop.load(Ordering::Relaxed) {
+        let want = *ctl.preview_want.lock().unwrap();
+        if want != preview {
+            preview = want;
+            *ctl.preview_shown.lock().unwrap() = active.set_preview(want);
+        }
         let desired = *ctl.codec.lock().unwrap();
         if desired != active.codec() {
             match active.set_codec(desired) {
@@ -286,6 +318,9 @@ fn share_loop(
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+    // A swapchain da prévia sai junto; a janela já pode ser destruída.
+    drop(active);
+    *ctl.preview_shown.lock().unwrap() = None;
 }
 
 enum ViewerMsg {

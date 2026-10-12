@@ -16,7 +16,7 @@ Status: **Draft** · Fase: 0 · Depende de: SPEC-00
 | Captura de câmera | **Media Foundation** (`IMFSourceReader`) | API nativa de câmera do Windows. |
 | Encode de vídeo | **AMF** (AMD), **NVENC** (NVIDIA), **Quick Sync** (Intel) via MFT de hardware do Media Foundation | Codifica na GPU. Codec por hardware: AV1 onde houver, senão HEVC (H.265), senão H.264. |
 | Encode por software (último caso) | **H.264 do Windows** (Media Foundation, `CLSID_MSH264EncoderMFT`) | Vem com o Windows, com a licença das patentes do H.264 paga pela Microsoft; zero byte no binário e nada baixado de terceiros. O OpenH264 (BSD) era o plano: compilado no binário, a licença de patentes da Cisco não vale, e baixar o binário da Cisco quebraria "nenhum domínio de terceiros". |
-| Decode de vídeo | **D3D11VA via FFmpeg** (LGPL, DLLs carregadas em tempo de execução; o alvo é um build mínimo só com parsers + hwaccel de H.264/HEVC/AV1) (D-03) | Decodifica na GPU. Na máquina de referência, o Media Foundation não tem decoder HEVC nem AV1 sem a extensão da Store, mas a GPU decodifica os dois pelo D3D11VA (`spikes/video`). |
+| Decode de vídeo | **D3D11VA via FFmpeg** (LGPL, DLLs carregadas em tempo de execução; build mínimo só com parsers + hwaccel de H.264/HEVC/AV1) (D-03) | Decodifica na GPU. Na máquina de referência, o Media Foundation não tem decoder HEVC nem AV1 sem a extensão da Store, mas a GPU decodifica os dois pelo D3D11VA (`spikes/video`). |
 | Áudio — codec | **Opus** via `unsafe-libopus` (libopus 1.3 traduzida para Rust) | Padrão de voz em tempo real, leve e excelente a baixo bitrate. A tradução dispensa compilador C e cmake no build. |
 | Áudio — processamento | **WebRTC Audio Processing** (AEC3 + supressão de ruído + AGC2) via `aec3`, porte em Rust; **RNNoise** (`nnnoiseless`) como supressão forte opcional | Cancelamento de eco é difícil de fazer do zero; o módulo do WebRTC é o padrão de mercado. Os portes em Rust evitam o build C++ (meson) do original. |
 | Captura/saída de áudio | **WASAPI** (modo compartilhado, baixa latência) via `cpal` | API nativa de áudio do Windows. |
@@ -124,7 +124,7 @@ A meta "convidado leigo entra em < 60 s" (`SPEC-00`) esbarra em barreiras do pr�
 | **Antivírus** desconfiando de app que captura tela e abre porta UDP | Assinatura de código + envio do binário pra análise da Microsoft/fornecedores antes de cada release. |
 | **Firewall do Defender** ao escutar porta (criador no x1, relay no Windows) | A UI explica antes de o prompt aparecer. O cliente que só conecta não dispara prompt. |
 | **Handler `lerrichat://`** | Registrado em `HKCU\Software\Classes` na primeira execução — sem admin, sem instalador. Colar o link no app sempre funciona como alternativa. |
-| **Licenças de terceiros** (Slint royalty-free, FFmpeg LGPL, libopus e RNNoise BSD, porte do WebRTC APM BSD/MIT) | Tela "Sobre" com atribuições (Fase 6). FFmpeg em DLLs carregadas em tempo de execução (LGPL: o usuário pode trocá-las); falta o build mínimo (hoje ~95 MB do build completo). |
+| **Licenças de terceiros** (Slint royalty-free, FFmpeg LGPL, libopus e RNNoise BSD, porte do WebRTC APM BSD/MIT) | Tela "Sobre" com atribuições (Fase 6). FFmpeg em DLLs carregadas em tempo de execução (LGPL: o usuário pode trocá-las). O zip leva um build mínimo só com o decode de H.264, HEVC e AV1 pela GPU (`scripts/ffmpeg-min.sh`). |
 
 ## 10. Riscos de arquitetura
 

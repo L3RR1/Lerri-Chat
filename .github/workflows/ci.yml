@@ -12,11 +12,11 @@ env:
 jobs:
   # DLLs do FFmpeg que vão no pacote (D-03). Só recompila quando o script muda.
   ffmpeg:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ffmpeg-min
           key: ffmpeg-min-${{ hashFiles('scripts/ffmpeg-min.sh') }}
@@ -26,7 +26,7 @@ jobs:
           sudo apt-get install -y mingw-w64 nasm
           bash scripts/ffmpeg-min.sh ffmpeg-min
       - run: ls -l ffmpeg-min
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ffmpeg-min
           path: ffmpeg-min
@@ -35,7 +35,7 @@ jobs:
     needs: ffmpeg
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -43,7 +43,7 @@ jobs:
       # Spikes são experimentos da Fase 0 (o de vídeo depende de FFmpeg em .deps/); ficam fora da CI.
       - run: cargo clippy --workspace --exclude spike-video --exclude spike-p2p --all-targets -- -D warnings
       - run: cargo test --workspace --exclude spike-video --exclude spike-p2p
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ffmpeg-min
           path: ffmpeg-min
@@ -81,15 +81,17 @@ jobs:
           }
           # A recusa esperada deixou LASTEXITCODE=1, que o Actions trataria como falha.
           exit 0
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lerrichat-windows
           path: target/release/lerrichat.exe
 
   linux-host:
-    runs-on: ubuntu-latest
+    # Ubuntu fixo: o binário liga na glibc daqui, e um runner mais novo
+    # deixaria de rodar em servidores com distro mais antiga.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -99,7 +101,7 @@ jobs:
       - run: cargo test -p lerri-core -p lerri-crypto -p lerri-net -p lerri-host
       - run: cargo build --release -p lerrichat-host
       - run: ls -lh target/release/lerrichat-host
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lerrichat-host-linux
           path: target/release/lerrichat-host
@@ -107,12 +109,12 @@ jobs:
   # O .zip que se manda para os amigos; numa tag v* vira Release.
   pacote:
     needs: [windows, linux-host]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: art
       - name: Montar o zip
@@ -126,7 +128,7 @@ jobs:
           install -m 755 art/lerrichat-host-linux/lerrichat-host "lerrichat-host-$v-linux-x64"
           ls -l LerriChat-*.zip lerrichat-host-*
           echo "V=$v" >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: LerriChat-${{ env.V }}-windows-x64
           path: LerriChat

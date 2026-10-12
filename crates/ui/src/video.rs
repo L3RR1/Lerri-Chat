@@ -98,6 +98,15 @@ pub fn set_devices(monitors: Vec<isize>, cameras: Vec<String>) {
     });
 }
 
+/// Troca as câmeras; devolve o índice da que estava escolhida, se continua ligada.
+pub fn set_cameras(cameras: Vec<String>, chosen: usize) -> Option<usize> {
+    STATE.with_borrow_mut(|s| {
+        let keep = s.cameras.get(chosen).and_then(|id| cameras.iter().position(|c| c == id));
+        s.cameras = cameras;
+        keep
+    })
+}
+
 /// Janelas mostradas no menu "O que compartilhar", depois dos monitores.
 pub fn set_windows(windows: Vec<isize>) {
     STATE.with_borrow_mut(|s| s.share_windows = windows);

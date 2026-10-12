@@ -139,6 +139,8 @@ pub enum RoomEvent {
     KeyframeRequested { video: Video },
     /// O que esta máquina faz com vídeo (chega logo depois de abrir a sala).
     Video(VideoInfo),
+    /// Câmeras ligadas mudaram com a sala aberta, como (id, nome).
+    Cameras(Vec<(String, String)>),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1110,6 +1112,8 @@ pub async fn run(
     emit(RoomEvent::Voice(media.voice_view.clone()));
     // O que a GPU desta máquina faz com vídeo (alguns ms; fora do runtime).
     let mut probe = Some(tokio::task::spawn_blocking(probe_video));
+    // Câmera ligada ou desligada com a sala aberta: olhada a cada `tick`.
+    let mut camera_scan: Option<tokio::task::JoinHandle<Vec<(String, String)>>> = None;
     loop {
         for f in core.take_out() {
             if let Err(e) = session.send(&f).await {
@@ -1149,6 +1153,14 @@ pub async fn run(
                 emit(RoomEvent::Video(video_info(&caps)));
                 media.video_caps = Some(caps);
             }
+            cams = async { camera_scan.as_mut().expect("guardado pelo if").await }, if camera_scan.is_some() => {
+                camera_scan = None;
+                if let Ok(cams) = cams
+                    && media.set_cameras(&cams)
+                {
+                    emit(RoomEvent::Cameras(cams));
+                }
+            }
             cmd = cmds.recv() => match cmd {
                 Some(Command::Send(text)) => core.send_text(&text),
                 Some(Command::NewInvite) => match &invite_host {
@@ -1186,6 +1198,9 @@ pub async fn run(
                 core.set_latency(session.latency());
                 if let Some(v) = &mut media.voice {
                     v.measure_loss();
+                }
+                if media.video_caps.is_some() && camera_scan.is_none() {
+                    camera_scan = Some(tokio::task::spawn_blocking(list_cameras));
                 }
             }
             _ = fast_tick.tick(), if media.active() => media.poll(&mut core, &emit),
@@ -1241,6 +1256,14 @@ fn probe_video() -> VideoCaps {
     VideoCaps::default()
 }
 
+/// Câmeras ligadas agora, como (id, nome).
+fn list_cameras() -> Vec<(String, String)> {
+    #[cfg(windows)]
+    return lerri_media::video::camera::cameras().into_iter().map(|c| (c.id, c.name)).collect();
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
 /// Um stream nosso no ar.
 struct Share {
     /// Mantém a saída viva; derrubar o `Share` para o envio.
@@ -1294,6 +1317,24 @@ impl Media {
             incoming,
             video_caps: None,
         }
+    }
+
+    /// Troca as câmeras ligadas; `true` se a lista mudou.
+    fn set_cameras(&mut self, cameras: &[(String, String)]) -> bool {
+        #[cfg(windows)]
+        if let Some(caps) = &mut self.video_caps {
+            let list: Vec<_> = cameras
+                .iter()
+                .map(|(id, name)| lerri_media::video::camera::CameraDevice { id: id.clone(), name: name.clone() })
+                .collect();
+            if caps.cameras != list {
+                caps.cameras = list;
+                return true;
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = cameras;
+        false
     }
 
     fn active(&self) -> bool {

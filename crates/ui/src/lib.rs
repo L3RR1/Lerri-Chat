@@ -652,6 +652,16 @@ async fn run_room(
                 });
                 return;
             }
+            RoomEvent::Cameras(cameras) => {
+                let _ = w1.upgrade_in_event_loop(move |ui| {
+                    let chosen = ui.get_camera_index().max(0) as usize;
+                    let keep = video::set_cameras(cameras.iter().map(|(id, _)| id.clone()).collect(), chosen);
+                    let names: Vec<SharedString> = cameras.iter().map(|(_, n)| n.clone().into()).collect();
+                    ui.set_cameras(ModelRc::new(VecModel::from(names)));
+                    ui.set_camera_index(keep.unwrap_or(0) as i32);
+                });
+                return;
+            }
             RoomEvent::VideoClosed { window } => {
                 let _ = w1.upgrade_in_event_loop(move |ui| video::closed(&ui, window));
                 return;

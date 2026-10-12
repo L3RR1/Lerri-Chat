@@ -457,6 +457,7 @@ async fn room_loop(session: Session, core: RoomCore, data_dir: &Path, invite_hos
         | RoomEvent::OutgoingHandle { .. }
         | RoomEvent::KeyframeRequested { .. }
         | RoomEvent::Video(_)
+        | RoomEvent::Cameras(_)
         | RoomEvent::Watching(_)
         | RoomEvent::VideoClosed { .. } => {}
     };

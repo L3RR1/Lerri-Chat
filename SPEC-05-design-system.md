@@ -12,7 +12,8 @@ A interface segue a **mesma linha espiritual do LerriNFC**: fundo escuro quase-p
 2. **Roxo é o acento, não o preenchimento.** Usado em estados ativos, foco, "quem está falando", botões primários. O resto respira no escuro.
 3. **Densidade calma.** Ferramenta, não rede social. Pouca cor, pouco ruído. Movimento só para mostrar mudança de estado (hover, foco, aba), em 120–180 ms.
 4. **Nativo e leve.** UI no renderer **software** do Slint (D-02): sem driver gráfico, ~22 MB ociosa. A estética não pode custar desempenho: nada de sombras pesadas, blur ou gradientes animados. Vídeo fica numa área própria (janela-filha D3D11) e a UI não desenha por cima dela.
-5. **Uma tarefa lidera cada tela.** Na inicial, entrar com um convite; na sala, conversar. O resto fica em volta, mais quieto, e o raro (servidor, ponto de encontro, endereços) fica a um clique.
+5. **Uma tarefa lidera cada tela.** Na inicial, entrar com um convite; na sala, conversar. O resto fica em volta, mais quieto, e o raro (servidor, ponto de encontro, endereços, ajustes de áudio) fica a um clique.
+6. **Separar com espaço, não com caixas.** Blocos se distinguem por espaço e, quando preciso, uma linha fina; cartão com borda só onde o conteúdo é de fato um objeto à parte (aviso, confirmação). Painéis que abrem sob demanda substituem o conteúdo lateral em vez de empilhar.
 
 ## 2. Paleta
 
@@ -60,7 +61,7 @@ A interface segue a **mesma linha espiritual do LerriNFC**: fundo escuro quase-p
 - Peso: 400 corpo, 600 títulos e botões, 700 só na inicial do avatar. Nada de light em fundo escuro (ilegível).
 - Mono só onde o conteúdo é código: convite, endereços, ids.
 
-**Cantos:** controles 8 px, painéis 12 px, pílulas e avatares inteiros (tokens `r-control` e `r-panel`).
+**Cantos:** controles 8 px, painéis 12 px, avatares inteiros (tokens `r-control` e `r-panel`).
 
 ## 4. Layout
 
@@ -83,10 +84,10 @@ A interface segue a **mesma linha espiritual do LerriNFC**: fundo escuro quase-p
 
 Como ficou: o app abre **uma sala por vez**, então no lugar da barra lateral de salas há a lista "Minhas salas" na tela inicial.
 
-- **Inicial:** barra do topo com a marca e "Sobre". Na coluna principal, "Entrar numa sala" lidera, com o mascote e o campo do convite; abaixo, "Criar uma sala" com abas "Direto deste PC (x1)" e "No meu servidor", e o ponto de encontro escondido em "Mais opções". Na lateral, "Seu perfil" (apelido com rótulo, histórico, id) e "Minhas salas", com estado vazio que explica para que serve. O conjunto centraliza na vertical e rola quando a janela fica baixa.
-- **Espera:** mascote, o que está acontecendo e uma barra indeterminada.
-- **Sala:** topo com o tipo ("Sala x1" / "Sala no servidor"), o id discreto e pílulas de "Cifrada de ponta a ponta" e do caminho de rede; à direita, Convidar, Desconectar (ou **Encerrar sala**, para o dono de uma x1, porque a sala vive no PC dele) e Sair da sala. À esquerda, avisos, convite (QR, link, copiar, gerar outro, endereços sob demanda), vídeo assistido e o chat, com avatar, mensagens seguidas da mesma pessoa agrupadas e um estado vazio que explica a cifragem. À direita, "Na sala" com avatares, presença e ações por membro, detalhes da mídia e atividade. Embaixo, a barra de controle com ícone e texto (voz | tela + monitor | câmera + qual câmera) e uma linha de estado em pílulas. Abaixo de 1000 px de largura, os botões da voz ficam só com ícone.
-- **Sobre:** coluna centrada com versão, rede/firewall e licenças em lista.
+- **Inicial:** barra do topo só com o nome e "Sobre". Uma coluna centrada: "Entrar numa sala" lidera, com o campo do convite e o apelido logo abaixo; uma linha separa "Criar uma sala", com "Criar sala x1" e "No meu servidor" lado a lado (o link de administração só aparece depois do clique) e o ponto de encontro recolhido. "Minhas salas" só aparece quando há alguma; o id fica no "Sobre". Rola quando a janela fica baixa.
+- **Espera:** o que está acontecendo e uma barra indeterminada.
+- **Sala:** topo com o tipo ("Sala x1" / "Sala no servidor"), o id discreto e uma linha de estado só (cadeado, ponto e texto do caminho de rede, papel); à direita, Convidar, Desconectar (ou **Encerrar sala**, para o dono de uma x1, porque a sala vive no PC dele) e Sair da sala. A coluna principal é a conversa, sem moldura: avisos, vídeos assistidos e o chat, com avatar, mensagens seguidas da mesma pessoa agrupadas e um estado vazio que explica a cifragem. À direita, um **painel de contexto** que mostra uma coisa por vez: "Na sala" (avatares, presença, ações por membro e a atividade embaixo), "Convidar" (QR, link, copiar, gerar outro, endereços sob demanda) ou "Voz e áudio" (dispositivos, modo de transmitir, supressão e detalhes da mídia). Abrir um deles nunca empurra a conversa nem a barra. Embaixo, a barra de controle numa linha: voz | tela + o que compartilhar | câmera + qual câmera à esquerda, o estado em texto à direita. Abaixo de 1000 px de largura, os botões ficam só com ícone.
+- **Sobre:** coluna centrada com versão, o seu id, rede/firewall e licenças em lista.
 
 ## 5. Componentes
 
@@ -98,7 +99,7 @@ Como ficou: o app abre **uma sala por vez**, então no lugar da barra lateral de
   - **ligado**: o mesmo botão em `warning`, para alternâncias (microfone mudo, ensurdecido).
 - **Ícones:** Tabler Icons 3.47.0 (MIT), traço de 2 px, rasterizados em PNG de 48 px e pintados com `colorize`.
 - **Campos, caixa de seleção, abas e menu de dispositivo:** componentes próprios (`Field`, `Check`, `Segmented`, `DeviceMenu`), fundo `surface-raised`, borda `violet` no foco. Os do `std-widgets` usam o azul de destaque do Fluent, e o Slint 1.18 não deixa trocar as cores do `Palette`. Rótulo sempre acima do campo; o placeholder é só exemplo.
-- **Pílula (`Chip`):** estado curto com ponto ou ícone, mais texto.
+- **Linha de estado:** ícone ou ponto colorido mais texto curto, separados por "·", no topo da sala e à direita da barra de controle. O estado nunca é só cor.
 - **Faixa (`Banner`):** aviso dentro da tela, com ícone, texto e as ações (ex.: "Cancelar" e "Sair de vez").
 - **Campo de código de convite:** mono, fundo `surface-raised`, com botão "copiar" e QR ao lado (o QR fica preto no branco, como os leitores esperam).
 - **Tile de participante:** avatar/inicial, nick, latência até a pessoa (com a cor do indicador de rede) e, quando ela fala, ondas roxas saindo do avatar e uma forma de onda no lugar do ícone de microfone.
@@ -117,7 +118,7 @@ Como ficou: o app abre **uma sala por vez**, então no lugar da barra lateral de
 ## 7. Ícone / marca
 
 - Herdar a linguagem do ícone do LerriNFC (criatura roxa, olhos verdes, fundo preto) como família visual, sem copiar o mesmo desenho.
-- App icon: o mascote roxo de olhos verdes (arte `LCOREMASCOTE`, sem o texto "CHAT", que vira borrão em tamanho pequeno). `app/assets/lerrichat.ico` vai embutido no `.exe` com 16–256 px: de 48 px para cima o desenho inteiro, até 32 px só a cabeça, para os olhos continuarem legíveis. A janela usa `crates/ui/ui/icon.png` (cabeça, 64 px), porque só aparece pequena (título, barra de tarefas).
+- App icon: o mascote roxo de olhos verdes (arte `LCOREMASCOTE`, sem o texto "CHAT", que vira borrão em tamanho pequeno). `app/assets/lerrichat.ico` vai embutido no `.exe` com 16–256 px: de 48 px para cima o desenho inteiro, até 32 px só a cabeça, para os olhos continuarem legíveis. A janela usa `crates/ui/ui/icon.png` (cabeça, 64 px), porque só aparece pequena (título, barra de tarefas). O mascote não aparece dentro do app: as telas ficam só com o conteúdo.
 
 ## 8. Acessibilidade
 

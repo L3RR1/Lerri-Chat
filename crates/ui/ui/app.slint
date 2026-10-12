@@ -222,34 +222,6 @@ component Dot inherits Rectangle {
     background: tone;
 }
 
-// Pílula de estado: ícone ou ponto, mais o texto. O estado nunca é só cor.
-component Chip inherits Rectangle {
-    in property <string> text;
-    in property <image> icon;
-    in property <color> tone: Theme.text-dim;
-    in property <bool> dot;
-    height: 26px;
-    border-radius: 13px;
-    background: Theme.surface-raised;
-    min-width: chip-lay.preferred-width;
-    chip-lay := HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 12px;
-        spacing: 6px;
-        if root.dot: VerticalLayout { alignment: center; Dot { tone: root.tone; } }
-        if root.icon.width > 0: VerticalLayout {
-            alignment: center;
-            Icon { source: root.icon; colorize: root.tone; width: 14px; height: 14px; }
-        }
-        Text {
-            text: root.text;
-            color: root.tone == Theme.text-dim || root.tone == Theme.text-mute ? Theme.text-dim : root.tone;
-            font-size: 12px;
-            vertical-alignment: center;
-        }
-    }
-}
-
 // Onda que sai do avatar de quem fala: um anel roxo que cresce e some. Existe
 // só enquanto a pessoa fala, então parado nada redesenha (SPEC-05 §6).
 component Ripple inherits Rectangle {
@@ -734,17 +706,9 @@ component Banner inherits Rectangle {
     }
 }
 
-// Os cantos arredondados já vêm no PNG: o renderer software não recorta com raio.
-component Mascot inherits Image {
-    in property <length> size: 112px;
-    width: root.size;
-    height: root.size;
-    source: @image-url("mascot.png");
-}
-
 // Barra do topo das telas sem sala: marca à esquerda, ações à direita.
 component TopBar inherits Rectangle {
-    height: 60px;
+    height: 56px;
     Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
     HorizontalLayout {
         padding-left: 24px;
@@ -754,8 +718,15 @@ component TopBar inherits Rectangle {
     }
 }
 
+// Linha fina que separa blocos sem fechá-los numa caixa.
+component Rule inherits Rectangle {
+    height: 1px;
+    background: Theme.border;
+}
+
+// Uma coluna só: entrar com o convite lidera; criar fica embaixo, e o raro
+// (servidor, ponto de encontro) só aparece quando pedido.
 component HomeView inherits VerticalLayout {
-    in property <string> my-id;
     in property <[SavedRoomRow]> saved-rooms;
     in-out property <string> join-link;
     in-out property <string> via-link;
@@ -769,11 +740,10 @@ component HomeView inherits VerticalLayout {
     callback save-settings();
     callback about();
 
-    property <int> create-mode: 0;
-    property <bool> show-advanced: root.via-link != "";
+    property <bool> show-via: root.via-link != "";
+    property <bool> show-server;
 
     TopBar {
-        VerticalLayout { alignment: center; Image { width: 28px; height: 28px; source: @image-url("icon.png"); } }
         Text { text: "Lerri Chat"; color: Theme.text; font-size: 16px; font-weight: 600; vertical-alignment: center; }
         Rectangle { }
         VerticalLayout {
@@ -782,91 +752,75 @@ component HomeView inherits VerticalLayout {
         }
     }
 
-    // Rola só quando a janela fica baixa (ex.: "Mais opções" aberto na altura mínima).
+    // Rola só quando a janela fica baixa.
     ScrollView {
         vertical-stretch: 1;
-    VerticalLayout {
-        min-height: parent.visible-height;
-        alignment: center;
-        HorizontalLayout {
-            padding: 24px;
-            spacing: 24px;
-
-            // Coluna principal: as duas tarefas, entrar e criar.
-            VerticalLayout {
-                horizontal-stretch: 1;
-                spacing: 28px;
-                alignment: start;
-
-                // A tarefa mais comum (quem recebe um convite) lidera a tela.
-                Panel {
-                    HorizontalLayout {
-                        padding: 24px;
-                        spacing: 24px;
-                        VerticalLayout { alignment: center; Mascot { size: 112px; } }
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 10px;
-                            Text { text: "Entrar numa sala"; color: Theme.text; font-size: 24px; font-weight: 600; }
-                            Dim { text: "Cole o convite que te mandaram. Cada convite serve para uma pessoa e vale por 24 horas."; }
-                            HorizontalLayout {
-                                spacing: 10px;
-                                padding-top: 6px;
-                                Field {
-                                    large: true;
-                                    mono: true;
-                                    label: "Convite";
-                                    text <=> root.join-link;
-                                    placeholder-text: "lerrichat://join?…";
-                                    accepted => { if (root.join-link != "") { root.join(); } }
-                                }
-                                Btn { text: "Entrar"; primary: true; large: true; enabled: root.join-link != ""; clicked => { root.join(); } }
-                            }
-                        }
-                    }
-                }
-
+        VerticalLayout {
+            min-height: parent.visible-height;
+            alignment: center;
+            HorizontalLayout {
+                padding: 32px;
+                alignment: center;
                 VerticalLayout {
-                    spacing: 12px;
-                    Text { text: "Criar uma sala"; color: Theme.text; font-size: 18px; font-weight: 600; }
-                    Segmented {
-                        options: ["Direto deste PC (x1)", "No meu servidor"];
-                        index <=> root.create-mode;
-                    }
-                    if root.create-mode == 0: VerticalLayout {
-                        spacing: 12px;
-                        padding-top: 4px;
-                        Dim { text: "Para conversar a dois. A sala fica neste PC e acaba quando você fechar o app."; }
-                        Small { text: "O Windows pode perguntar se o Lerri Chat pode usar a rede. Permita, senão ninguém de fora consegue entrar."; }
+                    width: 520px;
+                    spacing: 36px;
+
+                    // Quem recebeu um convite: a tarefa mais comum.
+                    VerticalLayout {
+                        spacing: 10px;
+                        Text { text: "Entrar numa sala"; color: Theme.text; font-size: 26px; font-weight: 600; }
+                        Dim { text: "Cole o convite que te mandaram. Cada um serve para uma pessoa e vale por 24 horas."; }
                         HorizontalLayout {
                             spacing: 10px;
-                            alignment: start;
-                            Btn { text: "Criar sala x1"; tonal: true; icon: @image-url("icons/user-plus.png"); clicked => { root.create-x1(); } }
-                            Btn {
-                                text: root.show-advanced ? "Ocultar opções" : "Mais opções";
-                                icon: root.show-advanced ? @image-url("icons/chevron-up.png") : @image-url("icons/chevron-down.png");
-                                clicked => { root.show-advanced = !root.show-advanced; }
-                            }
-                        }
-                        if root.show-advanced: VerticalLayout {
-                            spacing: 6px;
-                            FieldLabel { text: "Ponto de encontro (opcional)"; }
+                            padding-top: 6px;
                             Field {
+                                large: true;
                                 mono: true;
-                                label: "Link público do seu relay";
-                                text <=> root.via-link;
-                                placeholder-text: "lerrichat://relay?…";
+                                label: "Convite";
+                                text <=> root.join-link;
+                                placeholder-text: "lerrichat://join?…";
+                                accepted => { if (root.join-link != "") { root.join(); } }
                             }
-                            Small { text: "Com o link público do seu relay, os dois PCs se acham mesmo atrás de roteadores difíceis. A conversa continua direta."; }
+                            Btn { text: "Entrar"; primary: true; large: true; enabled: root.join-link != ""; clicked => { root.join(); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            padding-top: 6px;
+                            VerticalLayout {
+                                alignment: center;
+                                FieldLabel { text: "Seu apelido"; }
+                            }
+                            Field {
+                                label: "Apelido";
+                                text <=> root.nickname;
+                                placeholder-text: "Como a sala vai te chamar (opcional)";
+                                edited => { root.save-settings(); }
+                            }
                         }
                     }
-                    if root.create-mode == 1: VerticalLayout {
-                        spacing: 12px;
-                        padding-top: 4px;
-                        Dim { text: "Para 3 ou mais pessoas, numa máquina sua que fica ligada. A sala continua de pé quando alguém sai."; }
-                        VerticalLayout {
+
+                    Rule { }
+
+                    // Criar: as duas formas lado a lado; os campos só quando pedidos.
+                    VerticalLayout {
+                        spacing: 10px;
+                        Text { text: "Criar uma sala"; color: Theme.text; font-size: 18px; font-weight: 600; }
+                        Dim { text: "Direto deste PC para conversar a dois, ou no seu servidor para 3 ou mais pessoas."; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            padding-top: 6px;
+                            alignment: start;
+                            Btn { text: "Criar sala x1"; tonal: true; icon: @image-url("icons/device-desktop.png"); clicked => { root.create-x1(); } }
+                            Btn {
+                                text: "No meu servidor";
+                                icon: @image-url("icons/users.png");
+                                clicked => { root.show-server = !root.show-server; }
+                            }
+                        }
+                        if root.show-server: VerticalLayout {
                             spacing: 6px;
-                            FieldLabel { text: "Link de administração"; }
+                            padding-top: 6px;
+                            FieldLabel { text: "Link de administração do servidor"; }
                             HorizontalLayout {
                                 spacing: 10px;
                                 Field {
@@ -877,86 +831,73 @@ component HomeView inherits VerticalLayout {
                                     input-type: password;
                                     accepted => { if (root.admin-link != "") { root.create-server(); } }
                                 }
-                                Btn { text: "Criar no servidor"; tonal: true; enabled: root.admin-link != ""; clicked => { root.create-server(); } }
+                                Btn { text: "Criar"; tonal: true; enabled: root.admin-link != ""; clicked => { root.create-server(); } }
                             }
                             Small { text: "O lerrichat-host mostra esse link quando inicia. Guarde como uma senha."; }
                         }
-                    }
-                }
-            }
-
-            // Coluna lateral: quem você é e para onde voltar.
-            VerticalLayout {
-                width: 300px;
-                spacing: 16px;
-                alignment: start;
-                Panel {
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 8px;
-                        Heading { text: "Seu perfil"; }
-                        VerticalLayout {
-                            spacing: 6px;
-                            padding-top: 4px;
-                            FieldLabel { text: "Apelido"; }
-                            Field {
-                                label: "Apelido";
-                                text <=> root.nickname;
-                                placeholder-text: "Como a sala vai te chamar";
-                                edited => { root.save-settings(); }
-                            }
-                            Small { text: "Opcional. Só quem está na sala vê."; }
-                        }
-                        Check {
-                            text: "Guardar histórico do chat neste PC";
-                            small: true;
-                            checked <=> root.keep-history;
-                            toggled => { root.save-settings(); }
-                        }
+                        Small { text: "Na sala x1, o Windows pode perguntar se o Lerri Chat pode usar a rede. Permita, senão ninguém de fora consegue entrar."; }
                         HorizontalLayout {
+                            alignment: start;
+                            Btn {
+                                compact: true;
+                                text: root.show-via ? "Ocultar ponto de encontro" : "Ponto de encontro (opcional)";
+                                icon: root.show-via ? @image-url("icons/chevron-up.png") : @image-url("icons/chevron-down.png");
+                                clicked => { root.show-via = !root.show-via; }
+                            }
+                        }
+                        if root.show-via: VerticalLayout {
                             spacing: 6px;
-                            padding-top: 2px;
-                            Small { text: "Seu id"; wrap: no-wrap; horizontal-stretch: 0; vertical-alignment: center; }
-                            Text { text: root.my-id + "…"; color: Theme.text-dim; font-family: "Cascadia Mono"; font-size: 12px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                            Field {
+                                mono: true;
+                                label: "Link público do seu relay";
+                                text <=> root.via-link;
+                                placeholder-text: "lerrichat://relay?…";
+                            }
+                            Small { text: "Com o link público do seu relay, os dois PCs se acham mesmo atrás de roteadores difíceis. A conversa continua direta."; }
                         }
                     }
-                }
-                Panel {
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 10px;
-                        Heading { text: "Minhas salas"; }
-                        if root.saved-rooms.length == 0: Small {
-                            text: "As salas de servidor em que você entrar aparecem aqui, para voltar com um clique.";
-                        }
-                        for room[i] in root.saved-rooms: HorizontalLayout {
-                            spacing: 10px;
-                            VerticalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    width: 32px;
-                                    height: 32px;
-                                    border-radius: Theme.r-control;
-                                    background: Theme.violet-dim;
+
+                    // Só existe quando há para onde voltar.
+                    if root.saved-rooms.length > 0: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Minhas salas"; color: Theme.text; font-size: 15px; font-weight: 600; }
+                        for room[i] in root.saved-rooms: Rectangle {
+                            height: 48px;
+                            border-radius: Theme.r-control;
+                            background: rta.has-hover ? Theme.surface-hover : transparent;
+                            animate background { duration: 120ms; }
+                            rta := TouchArea { mouse-cursor: pointer; clicked => { root.open-room(i); } }
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 12px;
+                                VerticalLayout {
+                                    alignment: center;
                                     Icon { source: @image-url("icons/users.png"); colorize: Theme.violet-bright; }
                                 }
-                            }
-                            VerticalLayout {
-                                alignment: center;
-                                Text { text: room.id; color: Theme.text; font-family: "Cascadia Mono"; font-size: 13px; overflow: elide; }
-                                Small { text: room.label; }
-                            }
-                            Rectangle { }
-                            VerticalLayout {
-                                alignment: center;
-                                Btn { text: "Abrir"; compact: true; clicked => { root.open-room(i); } }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    Text { text: room.label != "" ? room.label : room.id; color: Theme.text; overflow: elide; }
+                                    if room.label != "": Text { text: room.id; color: Theme.text-dim; font-family: "Cascadia Mono"; font-size: 12px; overflow: elide; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Btn { text: "Abrir"; compact: true; label: "Abrir sala " + room.id; clicked => { root.open-room(i); } }
+                                }
                             }
                         }
+                    }
+
+                    Check {
+                        text: "Guardar o histórico do chat neste PC";
+                        small: true;
+                        checked <=> root.keep-history;
+                        toggled => { root.save-settings(); }
                     }
                 }
             }
         }
-    }
     }
 }
 
@@ -967,7 +908,6 @@ component BusyView inherits Rectangle {
     VerticalLayout {
         alignment: center;
         spacing: 20px;
-        HorizontalLayout { alignment: center; Mascot { size: 96px; } }
         Text {
             text: root.text;
             color: Theme.text;
@@ -994,6 +934,23 @@ component BusyView inherits Rectangle {
                 }
             }
         }
+    }
+}
+
+// Cabeçalho do painel lateral: título e, fora da lista de membros, fechar.
+component SideHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> count;
+    in property <bool> closable;
+    callback close();
+    spacing: 8px;
+    height: 36px;
+    Heading { text: root.title; vertical-alignment: center; }
+    if root.count != "": Text { text: root.count; color: Theme.text-dim; vertical-alignment: center; }
+    Rectangle { }
+    if root.closable: VerticalLayout {
+        alignment: center;
+        Btn { compact: true; icon: @image-url("icons/x.png"); label: "Fechar " + root.title; clicked => { root.close(); } }
     }
 }
 
@@ -1092,6 +1049,9 @@ component RoomView inherits VerticalLayout {
     property <bool> show-addresses;
     property <bool> show-audio;
     property <bool> admitted: root.room-status == "";
+    // O painel lateral mostra uma coisa por vez: voz e áudio, convite ou a sala.
+    property <bool> side-audio: root.show-audio;
+    property <bool> side-invite: !root.show-audio && root.is-owner && root.show-invite;
     in property <bool> narrow;
     // "Efeitos de animação" desligados no Windows: ondas viram anel parado.
     in property <bool> reduce-motion;
@@ -1110,9 +1070,9 @@ component RoomView inherits VerticalLayout {
         chat-sv.content-y = min(0px, chat-sv.visible-height - chat-sv.content-height);
     }
 
-    // Topo: o que é esta sala, se está segura e conectada, e como sair.
+    // Topo: o que é esta sala, numa linha de estado, e como sair.
     Rectangle {
-        height: 68px;
+        height: 60px;
         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
         HorizontalLayout {
             padding-left: 20px;
@@ -1120,34 +1080,46 @@ component RoomView inherits VerticalLayout {
             spacing: 10px;
             VerticalLayout {
                 alignment: center;
-                spacing: 6px;
+                spacing: 3px;
+                horizontal-stretch: 1;
                 HorizontalLayout {
                     spacing: 10px;
                     alignment: start;
-                    Text { text: root.room-kind; color: Theme.text; font-size: 18px; font-weight: 600; vertical-alignment: center; }
-                    Text { text: root.room-id; color: Theme.text-mute; font-family: "Cascadia Mono"; font-size: 12px; vertical-alignment: center; }
+                    Text { text: root.room-kind; color: Theme.text; font-size: 16px; font-weight: 600; vertical-alignment: center; }
+                    Text { text: root.room-id; color: Theme.text-dim; font-family: "Cascadia Mono"; font-size: 12px; vertical-alignment: center; }
                 }
+                // Cifragem, caminho de rede e papel numa linha só; a cor do
+                // ponto acompanha a qualidade e o texto diz o caminho.
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: 6px;
                     alignment: start;
-                    Chip { icon: @image-url("icons/lock.png"); tone: Theme.success; text: "Cifrada de ponta a ponta"; }
-                    // Indicador de rede: a cor acompanha a qualidade e o texto diz o caminho.
-                    Chip {
-                        dot: true;
-                        tone: root.route-text == "" ? Theme.text-mute : root.route-quality == 0 ? Theme.success : root.route-quality == 1 ? Theme.warning : Theme.danger;
-                        text: root.route-text == "" ? "Sem conexão" : root.route-text;
+                    VerticalLayout { alignment: center; Icon { source: @image-url("icons/lock.png"); colorize: Theme.success; width: 13px; height: 13px; } }
+                    Text { text: "Cifrada"; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
+                    Text { text: "·"; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
+                    VerticalLayout {
+                        alignment: center;
+                        Dot { tone: root.route-text == "" ? Theme.text-mute : root.route-quality == 0 ? Theme.success : root.route-quality == 1 ? Theme.warning : Theme.danger; }
                     }
+                    Text {
+                        text: root.route-text == "" ? "Sem conexão" : root.route-text;
+                        color: root.route-text == "" || root.route-quality == 0 ? Theme.text-dim : root.route-quality == 1 ? Theme.warning : Theme.danger;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    if root.room-info != "": Text { text: "·"; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
                     Text { text: root.room-info; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; overflow: elide; }
                 }
             }
-            Rectangle { }
             if root.is-owner: VerticalLayout {
                 alignment: center;
                 Btn {
-                    text: root.show-invite ? "Fechar convite" : "Convidar";
-                    icon: root.show-invite ? @image-url("icons/x.png") : @image-url("icons/user-plus.png");
-                    tonal: !root.show-invite;
-                    clicked => { root.show-invite = !root.show-invite; }
+                    text: "Convidar";
+                    icon: @image-url("icons/user-plus.png");
+                    tonal: !root.side-invite;
+                    clicked => {
+                        root.show-audio = false;
+                        root.show-invite = !root.side-invite;
+                    }
                 }
             }
             VerticalLayout {
@@ -1162,7 +1134,8 @@ component RoomView inherits VerticalLayout {
             if !root.is-owner: VerticalLayout {
                 alignment: center;
                 Btn {
-                    text: "Sair da sala";
+                    text: root.narrow ? "" : "Sair da sala";
+                    label: "Sair da sala";
                     icon: @image-url("icons/door-exit.png");
                     danger: true;
                     clicked => { root.confirm-leave = !root.confirm-leave; }
@@ -1173,14 +1146,13 @@ component RoomView inherits VerticalLayout {
 
     HorizontalLayout {
         vertical-stretch: 1;
-        padding: 16px;
-        padding-left: 20px;
-        padding-right: 20px;
-        spacing: 16px;
 
+        // Coluna principal: avisos, vídeos assistidos e a conversa.
         VerticalLayout {
-            spacing: 12px;
             horizontal-stretch: 1;
+            padding: 16px;
+            padding-left: 20px;
+            spacing: 12px;
 
             if root.confirm-leave && !root.is-owner: Banner {
                 tone: Theme.danger;
@@ -1199,172 +1171,6 @@ component RoomView inherits VerticalLayout {
 
             if root.room-status != "": Banner { text: root.room-status; }
 
-            if root.show-audio: Panel {
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 14px;
-                    HorizontalLayout {
-                        Heading { text: "Voz e áudio"; vertical-alignment: center; }
-                        Rectangle { }
-                        Btn { compact: true; icon: @image-url("icons/x.png"); label: "Fechar voz e áudio"; clicked => { root.show-audio = false; } }
-                    }
-                    HorizontalLayout {
-                        spacing: 16px;
-                        VerticalLayout {
-                            spacing: 6px;
-                            alignment: start;
-                            FieldLabel { text: "Microfone"; }
-                            Select {
-                                label: "Microfone";
-                                model: root.audio-inputs;
-                                current-index <=> root.input-index;
-                                selected(i) => { root.input-changed(i); }
-                            }
-                        }
-                        VerticalLayout {
-                            spacing: 6px;
-                            alignment: start;
-                            FieldLabel { text: "Saída"; }
-                            Select {
-                                label: "Saída de áudio";
-                                model: root.audio-outputs;
-                                current-index <=> root.output-index;
-                                selected(i) => { root.output-changed(i); }
-                            }
-                        }
-                    }
-                    VerticalLayout {
-                        spacing: 6px;
-                        FieldLabel { text: "Quando transmitir"; }
-                        Segmented {
-                            options: ["Quando eu falar", "Só apertando uma tecla"];
-                            controlled: true;
-                            index: root.ptt-key != "" || root.ptt-capturing ? 1 : 0;
-                            changed(i) => { root.ptt-mode(i == 1); }
-                        }
-                    }
-                    if root.ptt-key != "" || root.ptt-capturing: HorizontalLayout {
-                        spacing: 10px;
-                        VerticalLayout {
-                            alignment: center;
-                            Icon { source: @image-url("icons/keyboard.png"); colorize: Theme.violet-bright; }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            horizontal-stretch: 1;
-                            Text {
-                                text: root.ptt-capturing ? "Aperte a tecla ou o botão do mouse que vai usar (Esc cancela)" : root.ptt-key;
-                                color: root.ptt-capturing ? Theme.violet-bright : Theme.text;
-                                font-weight: root.ptt-capturing ? 400 : 600;
-                                wrap: word-wrap;
-                            }
-                            if !root.ptt-capturing: Small { text: "Funciona com o jogo em foco. Segure para falar."; }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            Btn { compact: true; text: "Mudar tecla"; enabled: !root.ptt-capturing; clicked => { root.change-ptt-key(); } }
-                        }
-                    }
-                    Check {
-                        small: true;
-                        text: "Supressão forte de ruído (ventilador, teclado alto)";
-                        checked <=> root.voice-strong-ns;
-                        toggled => { root.strong-ns-changed(); }
-                    }
-                }
-            }
-
-            if root.is-owner && root.show-invite: Panel {
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 12px;
-                    HorizontalLayout {
-                        spacing: 18px;
-                        if root.invite-link == "": Rectangle {
-                            width: 148px;
-                            height: 148px;
-                            background: Theme.surface-raised;
-                            border-radius: Theme.r-control;
-                            Text {
-                                x: 14px;
-                                width: parent.width - 28px;
-                                height: parent.height;
-                                text: "Gere um convite para ver o QR aqui.";
-                                color: Theme.text-dim;
-                                font-size: 12px;
-                                wrap: word-wrap;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                        // O QR fica em preto no branco: leitores de QR esperam isso.
-                        if root.invite-link != "": Rectangle {
-                            width: 148px;
-                            height: 148px;
-                            background: white;
-                            border-radius: Theme.r-control;
-                            Image { width: 136px; height: 136px; source: root.invite-qr; image-rendering: pixelated; }
-                        }
-                        VerticalLayout {
-                            spacing: 10px;
-                            alignment: start;
-                            Heading { text: "Convide alguém"; }
-                            Dim { text: "Cada convite serve para uma pessoa e vale por 24 horas. Mande por um canal em que você confia."; font-size: 13px; }
-                            Rectangle {
-                                background: Theme.ink;
-                                border-radius: Theme.r-control;
-                                border-width: 1px;
-                                border-color: Theme.border;
-                                height: 44px;
-                                Text {
-                                    x: 12px;
-                                    width: parent.width - 24px;
-                                    height: parent.height;
-                                    text: root.invite-link == "" ? "Nenhum convite ativo" : root.invite-link;
-                                    color: Theme.text-dim;
-                                    font-family: "Cascadia Mono";
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-                            }
-                            HorizontalLayout {
-                                spacing: 8px;
-                                alignment: start;
-                                Btn { text: "Copiar convite"; icon: @image-url("icons/copy.png"); primary: true; enabled: root.invite-link != ""; clicked => { root.copy-invite(); } }
-                                Btn { text: root.invite-link == "" ? "Gerar convite" : "Gerar outro"; icon: @image-url("icons/refresh.png"); clicked => { root.new-invite(); } }
-                                if root.copy-status != "": VerticalLayout {
-                                    alignment: center;
-                                    Chip {
-                                        icon: root.copy-ok ? @image-url("icons/check.png") : @image-url("icons/alert-triangle.png");
-                                        tone: root.copy-ok ? Theme.success : Theme.danger;
-                                        text: root.copy-status;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // Endereços que vão no convite: o aviso fica à vista, a lista só quando pedida.
-                    if root.reach-text != "": HorizontalLayout {
-                        spacing: 10px;
-                        if root.reach-warning: VerticalLayout { alignment: center; Icon { source: @image-url("icons/alert-triangle.png"); colorize: Theme.warning; width: 16px; height: 16px; } }
-                        Text {
-                            text: root.reach-note != "" ? root.reach-note : "Endereços deste PC que vão no convite.";
-                            color: root.reach-warning ? Theme.warning : Theme.text-dim;
-                            font-size: 12px;
-                            wrap: word-wrap;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            Btn { compact: true; text: root.show-addresses ? "Ocultar endereços" : "Ver endereços"; clicked => { root.show-addresses = !root.show-addresses; } }
-                        }
-                    }
-                    if root.show-addresses && root.reach-text != "": Text { text: root.reach-text; color: Theme.text-dim; wrap: word-wrap; font-family: "Cascadia Mono"; font-size: 12px; }
-                }
-            }
-
             // Vídeos assistidos, em grade (telas e câmeras juntas). Cada imagem
             // é uma janela-filha (D3D11) que o Rust põe em cima da caixa preta
             // da célula; a UI não desenha nada ali. Sem nada, altura zero.
@@ -1376,16 +1182,10 @@ component RoomView inherits VerticalLayout {
                 // sobra uma faixa à direita da sala.
                 max-width: 100000px;
                 min-height: !any ? 0px : root.tiles.length > 2 ? 380px : 240px;
-                background: Theme.surface;
-                border-radius: Theme.r-panel;
-                border-width: any ? 1px : 0px;
-                border-color: Theme.border;
                 clip: true;
                 stage := Rectangle {
-                    x: 10px;
-                    y: 10px;
-                    width: max(0px, parent.width - 20px);
-                    height: max(0px, parent.height - 20px);
+                    width: parent.width;
+                    height: parent.height;
                     for t[i] in root.tiles: Rectangle {
                         x: t.x;
                         y: t.y;
@@ -1416,9 +1216,8 @@ component RoomView inherits VerticalLayout {
                             }
                             Btn {
                                 compact: true;
-                                text: t.width < 260px ? "" : "Fechar";
-                                label: "Fechar " + (t.camera ? "câmera de " : "tela de ") + t.label;
                                 icon: @image-url("icons/x.png");
+                                label: "Fechar " + (t.camera ? "câmera de " : "tela de ") + t.label;
                                 clicked => { root.close-tile(i); }
                             }
                         }
@@ -1426,7 +1225,7 @@ component RoomView inherits VerticalLayout {
                             y: 38px;
                             width: parent.width;
                             height: max(0px, parent.height - 38px);
-                            background: Theme.ink;
+                            background: Theme.surface;
                             border-radius: Theme.r-control;
                             Text { text: "Aguardando a imagem…"; color: Theme.text-dim; }
                         }
@@ -1434,20 +1233,22 @@ component RoomView inherits VerticalLayout {
                 }
             }
 
-            chat-panel := Panel {
+            // A conversa: sem moldura, ocupa o que sobra da coluna.
+            chat-panel := VerticalLayout {
                 vertical-stretch: 1;
                 min-height: 140px;
-                VerticalLayout {
+                Rectangle {
+                    vertical-stretch: 1;
                     chat-sv := ScrollView {
-                        vertical-stretch: 1;
+                        width: parent.width;
+                        height: parent.height;
                         VerticalLayout {
                             alignment: start;
-                            padding: 16px;
                             padding-bottom: 8px;
                             spacing: 4px;
                             for line in root.chat: HorizontalLayout {
                                 spacing: 12px;
-                                padding-top: line.first ? 10px : 0px;
+                                padding-top: line.first ? 12px : 0px;
                                 VerticalLayout {
                                     alignment: start;
                                     width: 38px;
@@ -1466,188 +1267,305 @@ component RoomView inherits VerticalLayout {
                             }
                         }
                     }
-                    Rectangle { height: 1px; background: Theme.border; }
-                    HorizontalLayout {
-                        padding: 12px;
-                        spacing: 10px;
-                        Field {
-                            large: true;
-                            label: "Mensagem";
-                            text <=> root.chat-draft;
-                            placeholder-text: root.admitted ? "Escreva uma mensagem" : "Aguardando o dono te admitir…";
-                            enabled: root.admitted;
-                            accepted => { root.send-chat(); }
+                    // Sala vazia: diz o que acontece aqui e por que é seguro.
+                    if root.chat.length == 0 && self.height > 180px: VerticalLayout {
+                        width: parent.width;
+                        height: parent.height;
+                        alignment: center;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            alignment: center;
+                            Icon { source: @image-url("icons/message-circle.png"); colorize: Theme.violet-bright; width: 28px; height: 28px; }
                         }
-                        Btn { text: "Enviar"; icon: @image-url("icons/send.png"); primary: true; large: true; enabled: root.admitted && root.chat-draft != ""; clicked => { root.send-chat(); } }
+                        Text { text: "A conversa começa aqui"; color: Theme.text; font-size: 15px; font-weight: 600; horizontal-alignment: center; }
+                        HorizontalLayout {
+                            alignment: center;
+                            Dim {
+                                max-width: 380px;
+                                text: "As mensagens são cifradas no seu PC. Quem hospeda a sala só repassa bytes que não consegue ler.";
+                                font-size: 13px;
+                                horizontal-alignment: center;
+                            }
+                        }
                     }
                 }
-                // Sala vazia: diz o que acontece aqui e por que é seguro. Fica
-                // por cima da lista, acima da caixa de mensagem (69 px).
-                if root.chat.length == 0 && chat-panel.height > 250px: VerticalLayout {
-                    x: 0px;
-                    y: 0px;
-                    width: parent.width;
-                    height: parent.height - 69px;
-                    alignment: center;
-                    spacing: 8px;
-                    HorizontalLayout {
-                        alignment: center;
-                        Rectangle {
-                            width: 48px;
-                            height: 48px;
-                            border-radius: 24px;
-                            background: Theme.violet-dim;
-                            Icon { source: @image-url("icons/message-circle.png"); colorize: Theme.violet-bright; width: 24px; height: 24px; }
-                        }
+                HorizontalLayout {
+                    padding-top: 8px;
+                    spacing: 10px;
+                    Field {
+                        large: true;
+                        label: "Mensagem";
+                        text <=> root.chat-draft;
+                        placeholder-text: root.admitted ? "Escreva uma mensagem" : "Aguardando o dono te admitir…";
+                        enabled: root.admitted;
+                        accepted => { root.send-chat(); }
                     }
-                    Text { text: "A conversa começa aqui"; color: Theme.text; font-size: 15px; font-weight: 600; horizontal-alignment: center; }
-                    HorizontalLayout {
-                        alignment: center;
-                        Dim {
-                            max-width: 380px;
-                            text: "As mensagens são cifradas no seu PC. Quem hospeda a sala só repassa bytes que não consegue ler.";
-                            font-size: 13px;
-                            horizontal-alignment: center;
-                        }
-                    }
+                    Btn { icon: @image-url("icons/send.png"); label: "Enviar"; primary: true; large: true; width: 44px; enabled: root.admitted && root.chat-draft != ""; clicked => { root.send-chat(); } }
                 }
             }
         }
 
-        VerticalLayout {
-            width: 288px;
-            spacing: 12px;
-            Panel {
+        // Painel lateral de contexto: a sala (membros e atividade), o convite
+        // ou voz e áudio, um por vez. Nunca empurra a conversa nem a barra.
+        Rectangle {
+            width: 300px;
+            background: Theme.surface;
+            Rectangle { x: 0; width: 1px; background: Theme.border; }
+
+            // Rola quando a janela fica baixa.
+            if root.side-audio: ScrollView {
+                width: parent.width;
+                height: parent.height;
                 VerticalLayout {
                     padding: 16px;
-                    spacing: 12px;
+                    spacing: 16px;
                     alignment: start;
+                    SideHeader { title: "Voz e áudio"; closable: true; close => { root.show-audio = false; } }
+                    VerticalLayout {
+                        spacing: 6px;
+                        FieldLabel { text: "Microfone"; }
+                        Select {
+                            label: "Microfone";
+                            model: root.audio-inputs;
+                            current-index <=> root.input-index;
+                            selected(i) => { root.input-changed(i); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        FieldLabel { text: "Saída"; }
+                        Select {
+                            label: "Saída de áudio";
+                            model: root.audio-outputs;
+                            current-index <=> root.output-index;
+                            selected(i) => { root.output-changed(i); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        FieldLabel { text: "Transmitir"; }
+                        Segmented {
+                            options: ["Ao falar", "Com uma tecla"];
+                            controlled: true;
+                            index: root.ptt-key != "" || root.ptt-capturing ? 1 : 0;
+                            changed(i) => { root.ptt-mode(i == 1); }
+                        }
+                    }
+                    if root.ptt-key != "" || root.ptt-capturing: HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.ptt-capturing ? "Aperte a tecla ou o botão do mouse (Esc cancela)" : root.ptt-key;
+                                color: root.ptt-capturing ? Theme.violet-bright : Theme.text;
+                                font-weight: root.ptt-capturing ? 400 : 600;
+                                wrap: word-wrap;
+                            }
+                            if !root.ptt-capturing: Small { text: "Segure para falar, mesmo com o jogo em foco."; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Btn { compact: true; text: "Mudar"; label: "Mudar tecla"; enabled: !root.ptt-capturing; clicked => { root.change-ptt-key(); } }
+                        }
+                    }
+                    Check {
+                        small: true;
+                        text: "Supressão forte de ruído";
+                        checked <=> root.voice-strong-ns;
+                        toggled => { root.strong-ns-changed(); }
+                    }
+                    // Detalhes técnicos da mídia ligada: dispositivos, codec, fps.
+                    if root.voice-devices != "" || root.screen-info != "" || root.camera-info != "": VerticalLayout {
+                        spacing: 4px;
+                        Rule { }
+                        if root.voice-devices != "": Small { text: root.voice-devices; }
+                        if root.screen-info != "": Small { text: "Tela: " + root.screen-info; }
+                        if root.camera-info != "": Small { text: "Câmera: " + root.camera-info; }
+                    }
+                }
+            }
+
+            // Rola quando a janela fica baixa.
+            if root.side-invite: ScrollView {
+                width: parent.width;
+                height: parent.height;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 14px;
+                    alignment: start;
+                    SideHeader { title: "Convidar"; closable: true; close => { root.show-invite = false; } }
+                    // O QR fica em preto no branco: leitores de QR esperam isso.
+                    HorizontalLayout {
+                        alignment: center;
+                        if root.invite-link != "": Rectangle {
+                            width: 168px;
+                            height: 168px;
+                            background: white;
+                            border-radius: Theme.r-control;
+                            Image { width: 156px; height: 156px; source: root.invite-qr; image-rendering: pixelated; }
+                        }
+                    }
+                    Dim { text: "Cada convite serve para uma pessoa e vale por 24 horas. Mande por um canal em que você confia."; font-size: 13px; }
+                    if root.invite-link != "": Rectangle {
+                        background: Theme.ink;
+                        border-radius: Theme.r-control;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        height: 36px;
+                        Text {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            height: parent.height;
+                            text: root.invite-link;
+                            color: Theme.text-dim;
+                            font-family: "Cascadia Mono";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
                     HorizontalLayout {
                         spacing: 8px;
-                        Heading { text: "Na sala"; vertical-alignment: center; }
-                        Text { text: root.members.length; color: Theme.text-dim; vertical-alignment: center; }
-                        Rectangle { }
+                        if root.invite-link != "": Btn { text: "Copiar"; label: "Copiar convite"; icon: @image-url("icons/copy.png"); primary: true; horizontal-stretch: 1; clicked => { root.copy-invite(); } }
+                        Btn { text: root.invite-link == "" ? "Gerar convite" : "Gerar outro"; icon: @image-url("icons/refresh.png"); horizontal-stretch: 1; tonal: root.invite-link == ""; clicked => { root.new-invite(); } }
                     }
-                    for m[i] in root.members: VerticalLayout {
-                        spacing: 8px;
-                        HorizontalLayout {
-                            spacing: 10px;
-                            VerticalLayout {
-                                alignment: center;
-                                Avatar { initial: m.initial; me: m.me; online: m.online; speaking: m.speaking; still: root.reduce-motion; tick: root.wave-tick; show-presence: true; size: 32px; }
-                            }
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 1px;
-                                Text { text: m.label; color: m.online ? Theme.text : Theme.text-dim; overflow: elide; }
-                                if m.owner || m.waiting || m.in-voice || m.sharing || m.camera: Text {
-                                    text: (m.owner ? "dono" : m.waiting ? "aguardando admissão" : "")
-                                        + (m.in-voice ? ((m.owner || m.waiting) ? ", " : "") + (m.speaking ? "falando" : "na voz") : "")
-                                        + (m.sharing ? ((m.owner || m.waiting || m.in-voice) ? ", " : "") + "mostrando a tela" : "")
-                                        + (m.camera ? ((m.owner || m.waiting || m.in-voice || m.sharing) ? ", " : "") + "câmera ligada" : "");
-                                    color: m.speaking ? Theme.violet-bright : m.waiting ? Theme.warning : Theme.text-dim;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-                            }
-                            // Latência até a pessoa (a sua aparece no topo, no caminho de rede).
-                            if !m.me && m.latency >= 0: Text {
-                                text: m.latency + " ms";
-                                color: m.latency < 120 ? Theme.text-dim : m.latency < 300 ? Theme.warning : Theme.danger;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                                accessible-role: text;
-                                accessible-label: "Latência até " + m.label + ": " + m.latency + " milissegundos";
-                            }
-                            if m.in-voice && !m.speaking: VerticalLayout {
-                                alignment: center;
-                                Icon {
-                                    source: @image-url("icons/microphone.png");
-                                    colorize: Theme.text-mute;
-                                    width: 16px;
-                                    height: 16px;
-                                }
-                            }
-                            if m.speaking: Waveform { still: root.reduce-motion; tick: root.wave-tick; }
-                        }
-                        if ((m.sharing || m.camera) && !m.me && root.watch-problem == "") || (root.is-owner && !m.me && !m.waiting && root.confirm-remove != i): HorizontalLayout {
-                            spacing: 6px;
-                            alignment: start;
-                            padding-left: 48px;
-                            // Com a grade cheia, só dá para fechar.
-                            if m.sharing && !m.me && root.watch-problem == "": Btn {
-                                compact: true;
-                                text: m.watching ? "Fechar tela" : "Assistir";
-                                tonal: !m.watching;
-                                enabled: m.watching || root.tiles.length < root.max-tiles;
-                                clicked => {
-                                    if (m.watching) { root.unwatch-member(i); } else { root.watch-member(i); }
-                                }
-                            }
-                            if m.camera && !m.me && root.watch-problem == "": Btn {
-                                compact: true;
-                                text: m.watching-camera ? "Fechar câmera" : "Câmera";
-                                tonal: !m.watching-camera;
-                                enabled: m.watching-camera || root.tiles.length < root.max-tiles;
-                                clicked => {
-                                    if (m.watching-camera) { root.unwatch-camera(i); } else { root.watch-camera(i); }
-                                }
-                            }
-                            if root.is-owner && !m.me && !m.waiting && root.confirm-remove != i: Btn {
-                                compact: true;
-                                text: "Remover";
-                                danger: true;
-                                clicked => { root.confirm-remove = i; }
-                            }
-                        }
-                        if root.confirm-remove == i: Rectangle {
-                            background: Theme.danger-dim;
-                            border-radius: Theme.r-control;
-                            border-width: 1px;
-                            border-color: Theme.danger;
-                            VerticalLayout {
-                                padding: 10px;
-                                spacing: 8px;
-                                Text {
-                                    text: "Remover troca a chave do grupo: a pessoa não lê mais nada daqui em diante e cai da sala.";
-                                    color: Theme.text;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    alignment: start;
-                                    Btn { compact: true; text: "Cancelar"; clicked => { root.confirm-remove = -1; } }
-                                    Btn { compact: true; danger: true; text: "Remover"; clicked => { root.remove-member(i); root.confirm-remove = -1; } }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // Detalhes técnicos da mídia ligada: dispositivos, codec, fps.
-            if root.voice-devices != "" || root.screen-info != "" || root.camera-info != "": Panel {
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 6px;
-                    Heading { text: "Detalhes da mídia"; font-size: 13px; }
-                    if root.voice-devices != "": Small { text: root.voice-devices; }
-                    if root.screen-info != "": Small { text: "Tela: " + root.screen-info; }
-                    if root.camera-info != "": Small { text: "Câmera: " + root.camera-info; }
-                }
-            }
-            Panel {
-                vertical-stretch: 1;
-                VerticalLayout {
-                    padding: 16px;
-                    padding-right: 6px;
-                    spacing: 8px;
-                    Heading { text: "Atividade"; font-size: 13px; }
-                    ScrollView {
+                    if root.copy-status != "": HorizontalLayout {
+                        spacing: 6px;
                         VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                source: root.copy-ok ? @image-url("icons/check.png") : @image-url("icons/alert-triangle.png");
+                                colorize: root.copy-ok ? Theme.success : Theme.danger;
+                                width: 14px;
+                                height: 14px;
+                            }
+                        }
+                        Text { text: root.copy-status; color: root.copy-ok ? Theme.success : Theme.danger; font-size: 12px; vertical-alignment: center; }
+                    }
+                    // Endereços que vão no convite: o aviso fica à vista, a lista só quando pedida.
+                    if root.reach-text != "": VerticalLayout {
+                        spacing: 8px;
+                        Rule { }
+                        Text {
+                            text: root.reach-note != "" ? root.reach-note : "Endereços deste PC que vão no convite.";
+                            color: root.reach-warning ? Theme.warning : Theme.text-dim;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
                             alignment: start;
+                            Btn { compact: true; text: root.show-addresses ? "Ocultar endereços" : "Ver endereços"; clicked => { root.show-addresses = !root.show-addresses; } }
+                        }
+                        if root.show-addresses: Text { text: root.reach-text; color: Theme.text-dim; wrap: word-wrap; font-family: "Cascadia Mono"; font-size: 12px; }
+                    }
+                }
+            }
+
+            if !root.side-audio && !root.side-invite: VerticalLayout {
+                padding: 16px;
+                padding-right: 6px;
+                spacing: 10px;
+                SideHeader { title: "Na sala"; count: root.members.length; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 12px;
+                        padding-right: 10px;
+                        for m[i] in root.members: VerticalLayout {
+                            spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Avatar { initial: m.initial; me: m.me; online: m.online; speaking: m.speaking; still: root.reduce-motion; tick: root.wave-tick; show-presence: true; size: 32px; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 1px;
+                                    horizontal-stretch: 1;
+                                    Text { text: m.label; color: m.online ? Theme.text : Theme.text-dim; overflow: elide; }
+                                    if m.owner || m.waiting || m.in-voice || m.sharing || m.camera: Text {
+                                        text: (m.owner ? "dono" : m.waiting ? "aguardando admissão" : "")
+                                            + (m.in-voice ? ((m.owner || m.waiting) ? ", " : "") + (m.speaking ? "falando" : "na voz") : "")
+                                            + (m.sharing ? ((m.owner || m.waiting || m.in-voice) ? ", " : "") + "mostrando a tela" : "")
+                                            + (m.camera ? ((m.owner || m.waiting || m.in-voice || m.sharing) ? ", " : "") + "câmera ligada" : "");
+                                        color: m.speaking ? Theme.violet-bright : m.waiting ? Theme.warning : Theme.text-dim;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                // Latência até a pessoa (a sua aparece no topo, no caminho de rede).
+                                if !m.me && m.latency >= 0: Text {
+                                    text: m.latency + " ms";
+                                    color: m.latency < 120 ? Theme.text-dim : m.latency < 300 ? Theme.warning : Theme.danger;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    accessible-role: text;
+                                    accessible-label: "Latência até " + m.label + ": " + m.latency + " milissegundos";
+                                }
+                                if m.speaking: Waveform { still: root.reduce-motion; tick: root.wave-tick; }
+                            }
+                            if ((m.sharing || m.camera) && !m.me && root.watch-problem == "") || (root.is-owner && !m.me && !m.waiting && root.confirm-remove != i): HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                padding-left: 48px;
+                                // Com a grade cheia, só dá para fechar.
+                                if m.sharing && !m.me && root.watch-problem == "": Btn {
+                                    compact: true;
+                                    text: m.watching ? "Fechar tela" : "Assistir";
+                                    tonal: !m.watching;
+                                    enabled: m.watching || root.tiles.length < root.max-tiles;
+                                    clicked => {
+                                        if (m.watching) { root.unwatch-member(i); } else { root.watch-member(i); }
+                                    }
+                                }
+                                if m.camera && !m.me && root.watch-problem == "": Btn {
+                                    compact: true;
+                                    text: m.watching-camera ? "Fechar câmera" : "Câmera";
+                                    tonal: !m.watching-camera;
+                                    enabled: m.watching-camera || root.tiles.length < root.max-tiles;
+                                    clicked => {
+                                        if (m.watching-camera) { root.unwatch-camera(i); } else { root.watch-camera(i); }
+                                    }
+                                }
+                                if root.is-owner && !m.me && !m.waiting && root.confirm-remove != i: Btn {
+                                    compact: true;
+                                    text: "Remover";
+                                    danger: true;
+                                    clicked => { root.confirm-remove = i; }
+                                }
+                            }
+                            if root.confirm-remove == i: Rectangle {
+                                background: Theme.danger-dim;
+                                border-radius: Theme.r-control;
+                                border-width: 1px;
+                                border-color: Theme.danger;
+                                VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 8px;
+                                    Text {
+                                        text: "Remover troca a chave do grupo: a pessoa não lê mais nada daqui em diante e cai da sala.";
+                                        color: Theme.text;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        alignment: start;
+                                        Btn { compact: true; text: "Cancelar"; clicked => { root.confirm-remove = -1; } }
+                                        Btn { compact: true; danger: true; text: "Remover"; clicked => { root.remove-member(i); root.confirm-remove = -1; } }
+                                    }
+                                }
+                            }
+                        }
+                        // Atividade: o que aconteceu na sala, mais quieta que a lista.
+                        if root.log.length > 0: VerticalLayout {
                             spacing: 6px;
-                            padding-right: 10px;
+                            padding-top: 8px;
+                            Rule { }
+                            Text { text: "Atividade"; color: Theme.text-dim; font-size: 12px; font-weight: 600; }
                             for line in root.log: Small { text: line; }
                         }
                     }
@@ -1656,22 +1574,21 @@ component RoomView inherits VerticalLayout {
         }
     }
 
-    // Barra de controle (SPEC-05 §4): voz, tela e câmera, sempre embaixo.
-    // Cada estado tem texto, não só cor.
+    // Barra de controle (SPEC-05 §4): voz, tela e câmera à esquerda, o estado
+    // à direita, numa linha só. Cada estado tem texto, não só cor.
     Rectangle {
+        height: 64px;
         background: Theme.surface;
         Rectangle { y: 0; height: 1px; background: Theme.border; }
-        VerticalLayout {
+        HorizontalLayout {
             padding-left: 20px;
             padding-right: 20px;
-            padding-top: 12px;
-            padding-bottom: 10px;
-            spacing: 8px;
+            spacing: 16px;
             HorizontalLayout {
-                spacing: 20px;
-                alignment: start;
-                HorizontalLayout {
-                    spacing: 8px;
+                spacing: 8px;
+                alignment: center;
+                VerticalLayout {
+                    alignment: center;
                     if !root.voice-active: Btn {
                         text: "Entrar na voz";
                         icon: @image-url("icons/microphone.png");
@@ -1679,7 +1596,10 @@ component RoomView inherits VerticalLayout {
                         enabled: root.admitted;
                         clicked => { root.join-voice(); }
                     }
-                    if root.voice-active: Btn {
+                }
+                if root.voice-active: VerticalLayout {
+                    alignment: center;
+                    Btn {
                         text: root.narrow ? "" : root.voice-muted ? "Ativar mic" : "Mudo";
                         label: root.voice-muted ? "Ativar microfone" : "Silenciar microfone";
                         icon: root.voice-muted ? @image-url("icons/microphone-off.png") : @image-url("icons/microphone.png");
@@ -1687,99 +1607,132 @@ component RoomView inherits VerticalLayout {
                         enabled: !root.voice-deafened;
                         clicked => { root.toggle-mute(); }
                     }
-                    if root.voice-active: Btn {
-                        text: root.narrow ? "" : root.voice-deafened ? "Ouvir" : "Ensurdecer";
+                }
+                if root.voice-active: VerticalLayout {
+                    alignment: center;
+                    Btn {
+                        text: "";
                         label: root.voice-deafened ? "Voltar a ouvir" : "Ensurdecer";
                         icon: root.voice-deafened ? @image-url("icons/headphones-off.png") : @image-url("icons/headphones.png");
                         on: root.voice-deafened;
                         clicked => { root.toggle-deafen(); }
                     }
+                }
+                VerticalLayout {
+                    alignment: center;
                     Btn {
                         icon: @image-url("icons/adjustments-horizontal.png");
                         label: "Voz e áudio";
-                        tonal: root.show-audio;
+                        tonal: root.side-audio;
                         clicked => {
                             root.show-audio = !root.show-audio;
                             if (root.show-audio) { root.audio-settings-opened(); }
                         }
                     }
-                    if root.voice-active: Btn {
-                        text: root.narrow ? "" : "Sair da voz";
+                }
+                if root.voice-active: VerticalLayout {
+                    alignment: center;
+                    Btn {
+                        text: "";
                         label: "Sair da voz";
                         icon: @image-url("icons/phone-off.png");
                         danger: true;
                         clicked => { root.leave-voice(); }
                     }
                 }
+            }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    if !root.screen-sharing: Btn {
-                        text: root.monitor-index >= root.monitor-count ? "Compartilhar janela" : "Compartilhar tela";
+            Rectangle { width: 1px; height: 28px; y: (parent.height - 28px) / 2; background: Theme.border; }
+
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: center;
+                if !root.screen-sharing: VerticalLayout {
+                    alignment: center;
+                    Btn {
+                        text: root.narrow ? "" : root.monitor-index >= root.monitor-count ? "Compartilhar janela" : "Compartilhar tela";
+                        label: root.monitor-index >= root.monitor-count ? "Compartilhar janela" : "Compartilhar tela";
                         icon: @image-url("icons/screen-share.png");
-                        tonal: true;
                         enabled: root.admitted && root.can-share;
                         clicked => { root.share-screen(); }
                     }
-                    if !root.screen-sharing && root.can-share: DeviceMenu {
+                }
+                if !root.screen-sharing && root.can-share: VerticalLayout {
+                    alignment: center;
+                    DeviceMenu {
                         title: "O que compartilhar";
                         model: root.monitors;
                         current-index <=> root.monitor-index;
                         opened => { root.share-menu-opened(); }
                     }
-                    if root.screen-sharing: Btn { text: root.monitor-index >= root.monitor-count ? "Parar de compartilhar" : "Parar a tela"; icon: @image-url("icons/screen-share-off.png"); danger: true; clicked => { root.stop-screen(); } }
                 }
+                if root.screen-sharing: VerticalLayout {
+                    alignment: center;
+                    Btn {
+                        text: root.narrow ? "" : "Parar";
+                        label: root.monitor-index >= root.monitor-count ? "Parar de compartilhar a janela" : "Parar de compartilhar a tela";
+                        icon: @image-url("icons/screen-share-off.png");
+                        danger: true;
+                        clicked => { root.stop-screen(); }
+                    }
+                }
+            }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    if !root.camera-on: Btn {
-                        text: root.cameras.length == 0 ? "Nenhuma câmera" : "Ligar câmera";
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: center;
+                if !root.camera-on: VerticalLayout {
+                    alignment: center;
+                    Btn {
+                        text: root.narrow ? "" : root.cameras.length == 0 ? "Sem câmera" : "Câmera";
+                        label: root.cameras.length == 0 ? "Nenhuma câmera" : "Ligar câmera";
                         icon: @image-url("icons/video.png");
                         enabled: root.admitted && root.can-share && root.cameras.length > 0;
                         clicked => { root.start-camera(); }
                     }
-                    if !root.camera-on && root.cameras.length > 1: DeviceMenu {
+                }
+                if !root.camera-on && root.cameras.length > 1: VerticalLayout {
+                    alignment: center;
+                    DeviceMenu {
                         title: "Câmera";
                         model: root.cameras;
                         current-index <=> root.camera-index;
                     }
-                    if root.camera-on: Btn { text: "Desligar câmera"; icon: @image-url("icons/video-off.png"); danger: true; clicked => { root.stop-camera(); } }
-                }
-            }
-            HorizontalLayout {
-                spacing: 12px;
-                alignment: start;
-                VerticalLayout {
-                    alignment: center;
-                    Chip {
-                        dot: true;
-                        tone: !root.voice-active ? Theme.text-mute : (root.voice-deafened || root.voice-muted) ? Theme.warning : Theme.success;
-                        text: !root.voice-active ? "Fora da voz" : root.voice-deafened ? "Ensurdecido" : root.voice-muted ? "Microfone mudo"
-                            : root.ptt-key == "" ? "Na voz" : root.me-speaking ? "Transmitindo" : "Segure " + root.ptt-key + " para falar";
-                    }
-                }
-                if root.screen-sharing: VerticalLayout {
-                    alignment: center;
-                    Chip {
-                        icon: @image-url("icons/screen-share.png");
-                        tone: Theme.violet-bright;
-                        text: (root.monitor-index >= root.monitor-count ? "Janela no ar, " : "Tela no ar, ") + (root.screen-watchers == 0 ? "ninguém assistindo" : root.screen-watchers == 1 ? "1 assistindo" : root.screen-watchers + " assistindo")
-                            + (root.screen-low-watchers == 0 ? "" : " (" + root.screen-low-watchers + " em qualidade baixa)");
-                    }
                 }
                 if root.camera-on: VerticalLayout {
                     alignment: center;
-                    Chip {
-                        icon: @image-url("icons/video.png");
-                        tone: Theme.violet-bright;
-                        text: "Câmera ligada, " + (root.camera-watchers == 0 ? "ninguém vendo" : root.camera-watchers == 1 ? "1 vendo" : root.camera-watchers + " vendo");
+                    Btn {
+                        text: root.narrow ? "" : "Desligar";
+                        label: "Desligar câmera";
+                        icon: @image-url("icons/video-off.png");
+                        danger: true;
+                        clicked => { root.stop-camera(); }
                     }
+                }
+            }
+
+            Rectangle { }
+
+            // Estado, à direita: o que está no ar e o que falta para assistir.
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    horizontal-alignment: right;
+                    font-size: 12px;
+                    color: !root.voice-active ? Theme.text-dim : (root.voice-deafened || root.voice-muted) ? Theme.warning : Theme.success;
+                    text: (!root.voice-active ? "Fora da voz" : root.voice-deafened ? "Ensurdecido" : root.voice-muted ? "Microfone mudo"
+                            : root.ptt-key == "" ? "Na voz" : root.me-speaking ? "Transmitindo" : "Segure " + root.ptt-key + " para falar")
+                        + (root.screen-sharing ? " · " + (root.monitor-index >= root.monitor-count ? "janela" : "tela") + " no ar, " + (root.screen-watchers == 0 ? "ninguém assistindo" : root.screen-watchers == 1 ? "1 assistindo" : root.screen-watchers + " assistindo")
+                            + (root.screen-low-watchers == 0 ? "" : " (" + root.screen-low-watchers + " em qualidade baixa)") : "")
+                        + (root.camera-on ? " · câmera: " + (root.camera-watchers == 0 ? "ninguém vendo" : root.camera-watchers == 1 ? "1 vendo" : root.camera-watchers + " vendo") : "");
+                    overflow: elide;
                 }
                 if root.watch-problem != "": Text {
                     text: "Para assistir: " + root.watch-problem;
                     color: Theme.warning;
                     font-size: 12px;
-                    vertical-alignment: center;
+                    horizontal-alignment: right;
                     overflow: elide;
                 }
             }
@@ -1793,9 +1746,10 @@ struct ThirdParty {
     license: string,
 }
 
-// Sobre: versão, licenças de terceiros (SPEC-01 §9) e o que o app faz na rede.
+// Sobre: versão, seu id, o que o app faz na rede e as licenças de terceiros (SPEC-01 §9).
 component AboutView inherits VerticalLayout {
     in property <string> version;
+    in property <string> my-id;
     callback back();
 
     property <[ThirdParty]> libs: [
@@ -1822,22 +1776,23 @@ component AboutView inherits VerticalLayout {
     ScrollView {
         vertical-stretch: 1;
         HorizontalLayout {
-            padding: 24px;
+            padding: 32px;
             alignment: center;
             VerticalLayout {
-                max-width: 720px;
-                horizontal-stretch: 1;
+                width: 640px;
                 alignment: start;
                 spacing: 28px;
 
-                HorizontalLayout {
-                    spacing: 20px;
-                    VerticalLayout { alignment: center; Mascot { size: 88px; } }
-                    VerticalLayout {
-                        alignment: center;
+                VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "Lerri Chat " + root.version; color: Theme.text; font-size: 22px; font-weight: 600; }
+                    Dim { text: "Voz, chat, tela e câmera entre amigos, cifrados de ponta a ponta. Sem conta e sem servidor de terceiros: só o seu PC, o dos seus amigos e, se você quiser, o seu próprio relay."; }
+                    HorizontalLayout {
                         spacing: 6px;
-                        Text { text: "Lerri Chat " + root.version; color: Theme.text; font-size: 22px; font-weight: 600; }
-                        Dim { text: "Voz, chat, tela e câmera entre amigos, cifrados de ponta a ponta. Sem conta e sem servidor de terceiros: só o seu PC, o dos seus amigos e, se você quiser, o seu próprio relay."; }
+                        padding-top: 4px;
+                        alignment: start;
+                        Small { text: "Seu id"; wrap: no-wrap; vertical-alignment: center; }
+                        Text { text: root.my-id + "…"; color: Theme.text-dim; font-family: "Cascadia Mono"; font-size: 12px; vertical-alignment: center; }
                     }
                 }
 
@@ -1852,7 +1807,7 @@ component AboutView inherits VerticalLayout {
                     spacing: 4px;
                     Heading { text: "Software de terceiros"; }
                     for lib[i] in root.libs: VerticalLayout {
-                        if i > 0: Rectangle { height: 1px; background: Theme.border; }
+                        if i > 0: Rule { }
                         HorizontalLayout {
                             padding-top: 10px;
                             padding-bottom: 10px;
@@ -2030,7 +1985,6 @@ export component AppWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 visible: root.screen == "home";
-                my-id: root.my-id;
                 saved-rooms: root.saved-rooms;
                 join-link <=> root.join-link;
                 via-link <=> root.via-link;
@@ -2049,6 +2003,7 @@ export component AppWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 version: root.version;
+                my-id: root.my-id;
                 back => { root.screen = "home"; }
             }
 

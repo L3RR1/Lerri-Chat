@@ -7,11 +7,11 @@ publish.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-lerri-client = { version = "0.0.6", path = "../client" }
-lerri-core = { version = "0.0.6", path = "../core" }
-lerri-crypto = { version = "0.0.6", path = "../crypto" }
-lerri-host = { version = "0.0.6", path = "../host" }
-lerri-net = { version = "0.0.6", path = "../net" }
+lerri-client = { version = "0.0.7", path = "../client" }
+lerri-core = { version = "0.0.7", path = "../core" }
+lerri-crypto = { version = "0.0.7", path = "../crypto" }
+lerri-host = { version = "0.0.7", path = "../host" }
+lerri-net = { version = "0.0.7", path = "../net" }
 qrcode = { version = "0.14.1", default-features = false }
 slint = { version = "1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility", "raw-window-handle-06"] }
 raw-window-handle = "0.6"
@@ -22,5 +22,5 @@ tracing = "0.1.44"
 slint-build = "1.18.1"
 
 [target."cfg(windows)".dependencies]
-lerri-media = { version = "0.0.6", path = "../media" }
+lerri-media = { version = "0.0.7", path = "../media" }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Time", "Win32_UI_WindowsAndMessaging"] }

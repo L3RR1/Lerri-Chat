@@ -4070,7 +4070,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "lerri-client"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "lerri-core",
@@ -4085,7 +4085,7 @@ dependencies = [
 
 [[package]]
 name = "lerri-core"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "data-encoding",
  "postcard",
@@ -4096,7 +4096,7 @@ dependencies = [
 
 [[package]]
 name = "lerri-crypto"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek 3.0.0",
@@ -4119,7 +4119,7 @@ dependencies = [
 
 [[package]]
 name = "lerri-host"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4138,7 +4138,7 @@ dependencies = [
 
 [[package]]
 name = "lerri-media"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "aec3",
  "anyhow",
@@ -4157,7 +4157,7 @@ dependencies = [
 
 [[package]]
 name = "lerri-net"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "iroh",
@@ -4178,7 +4178,7 @@ dependencies = [
 
 [[package]]
 name = "lerri-ui"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "lerri-client",
@@ -4198,7 +4198,7 @@ dependencies = [
 
 [[package]]
 name = "lerrichat"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "embed-resource",
@@ -4217,7 +4217,7 @@ dependencies = [
 
 [[package]]
 name = "lerrichat-host"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "lerri-core",
@@ -7653,7 +7653,7 @@ dependencies = [
 
 [[package]]
 name = "spike-p2p"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7666,7 +7666,7 @@ dependencies = [
 
 [[package]]
 name = "spike-video"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-next",

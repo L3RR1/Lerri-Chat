@@ -5,12 +5,17 @@
 //! na GPU) e avisa. Quem codifica pega essa textura no próprio ritmo, então
 //! uma rajada de mudanças vira um quadro só, e o último estado de uma tela
 //! que parou nunca se perde.
+//!
+//! No Windows 10 o WGC sempre desenha uma borda amarela em volta do que está
+//! sendo capturado; lá, monitores vão pela Desktop Duplication
+//! ([`super::duplication`]), sem borda.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use windows::Foundation::Metadata::ApiInformation;
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
@@ -27,9 +32,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, IsWindowVisible, WS_EX_TOOLWINDOW,
 };
-use windows::core::{BOOL, Interface};
+use windows::core::{BOOL, Interface, h};
 
 use super::d3d::D3D;
+use super::duplication::Duplication;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Monitor {
@@ -166,9 +172,24 @@ impl Shared {
 
 pub struct Capture {
     pub shared: Arc<Shared>,
-    pool: Direct3D11CaptureFramePool,
-    session: GraphicsCaptureSession,
+    backend: Backend,
     pub size: (u32, u32),
+}
+
+enum Backend {
+    Wgc { pool: Direct3D11CaptureFramePool, session: GraphicsCaptureSession },
+    // Guardada só para parar a thread no `Drop`.
+    Duplication(#[allow(dead_code)] Duplication),
+}
+
+/// O WGC deixa tirar a borda amarela (Windows 11 em diante).
+fn borderless_wgc() -> bool {
+    ApiInformation::IsPropertyPresent(h!("Windows.Graphics.Capture.GraphicsCaptureSession"), h!("IsBorderRequired"))
+        .unwrap_or(false)
+}
+
+fn new_shared() -> Arc<Shared> {
+    Arc::new(Shared { latest: Mutex::new(None), signal: Condvar::new(), closed: AtomicBool::new(false) })
 }
 
 impl Capture {
@@ -177,6 +198,15 @@ impl Capture {
     }
 
     pub fn start(d3d: &D3D, target: Target) -> anyhow::Result<Self> {
+        if let Target::Monitor(m) = target
+            && !borderless_wgc()
+        {
+            let shared = new_shared();
+            match Duplication::start(d3d, m, shared.clone()) {
+                Ok((dup, size)) => return Ok(Self { shared, backend: Backend::Duplication(dup), size }),
+                Err(e) => tracing::info!("duplicação indisponível, captura com borda (WGC): {e:#}"),
+            }
+        }
         anyhow::ensure!(Self::is_supported(), "este Windows não tem a captura de tela moderna (WGC)");
         let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
         // SAFETY: identificadores vindos de `monitors()`/`windows()`; o WGC
@@ -194,7 +224,7 @@ impl Capture {
             2,
             size,
         )?;
-        let shared = Arc::new(Shared { latest: Mutex::new(None), signal: Condvar::new(), closed: AtomicBool::new(false) });
+        let shared = new_shared();
         let s = shared.clone();
         item.Closed(&TypedEventHandler::new(move |_, _| {
             s.closed.store(true, Ordering::Relaxed);
@@ -242,7 +272,7 @@ impl Capture {
         // Windows 11: sem a borda amarela em volta da tela compartilhada.
         let _ = session.SetIsBorderRequired(false);
         session.StartCapture()?;
-        Ok(Self { shared, pool, session, size: (size.Width as u32, size.Height as u32) })
+        Ok(Self { shared, backend: Backend::Wgc { pool, session }, size: (size.Width as u32, size.Height as u32) })
     }
 }
 
@@ -252,8 +282,10 @@ fn winrt_device_of(d3d: &D3D) -> windows::core::Result<IDirect3DDevice> {
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        let _ = self.session.Close();
-        let _ = self.pool.Close();
+        if let Backend::Wgc { pool, session } = &self.backend {
+            let _ = session.Close();
+            let _ = pool.Close();
+        }
     }
 }
 

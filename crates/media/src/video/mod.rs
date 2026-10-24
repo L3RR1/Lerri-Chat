@@ -3,6 +3,7 @@
 
 pub mod capture;
 pub mod d3d;
+pub mod duplication;
 pub mod encode;
 pub mod ffi;
 pub mod ffmpeg;

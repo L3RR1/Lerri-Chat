@@ -81,7 +81,7 @@ Cascata de codec por hardware, detectada em runtime:
 
 | Peça | Implementação |
 |------|---------------|
-| Captura | WGC do monitor inteiro (o principal, ou o escolhido na lista). O callback só copia o quadro novo para uma textura "mais recente" na GPU; o encoder pega no próprio ritmo. Uma rajada de mudanças vira um quadro, e o último estado de uma tela que parou nunca se perde. Sem fallback DXGI ainda. |
+| Captura | WGC do monitor inteiro (o principal, ou o escolhido na lista). O callback só copia o quadro novo para uma textura "mais recente" na GPU; o encoder pega no próprio ritmo. Uma rajada de mudanças vira um quadro, e o último estado de uma tela que parou nunca se perde. No Windows 10, onde o WGC não deixa tirar a borda amarela, o monitor vai pela DXGI Desktop Duplication (dispositivo D3D próprio, cursor desenhado por cima); se ela falhar (outra GPU, monitor girado), volta para o WGC. |
 | Escala e cor | Processador de vídeo do D3D11: BGRA → NV12 (BT.709 faixa limitada) e redução para caber em 1920×1080 (ou 1080×1920 com monitor em pé), com lados pares. |
 | Encode | MFT de hardware do Media Foundation, modo assíncrono, entrada NV12 direto da textura (DXGI device manager). Baixa latência, sem B-frames, `LowDelayVBR` (ou CBR), GOP longo: keyframe só sob pedido (`CODECAPI_AVEncVideoForceKeyFrame`). Teto de 60 fps; tela parada não gera quadro. |
 | Bitrate | Começa em 3 Mbps, entre 0,3 e 5 Mbps. Desce 25% quando há 3+ quadros em trânsito sem confirmação do relay, sobe 15% depois de 3 s fluindo, e com 6+ em trânsito nem codifica o próximo quadro. |
